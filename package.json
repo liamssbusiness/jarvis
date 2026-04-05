@@ -1,0 +1,20 @@
+{
+  "name": "jarvis-dashboard",
+  "version": "2.0.0",
+  "description": "J.A.R.V.I.S - Personal AI Dashboard for Liam",
+  "private": true,
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'Static site - no build needed'",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0"
+  },
+  "devDependencies": {
+    "vercel": "^37.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

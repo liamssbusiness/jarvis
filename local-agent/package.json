@@ -1,0 +1,17 @@
+{
+  "name": "jarvis-local-agent",
+  "version": "2.0.0",
+  "description": "JARVIS Local Agent — filesystem and system access bridge for the JARVIS AI dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
