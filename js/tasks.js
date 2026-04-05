@@ -36,6 +36,77 @@ class TaskManager {
       console.warn('TaskManager: could not save tasks', e.message);
     }
     this.updateBadge();
+    // Fire-and-forget sync to server (never blocks UI, silent on failure)
+    this._syncToServer();
+  }
+
+  /**
+   * Push the current local task list to the server's shared sync store so
+   * the Telegram bot (and any other clients) can see the latest state.
+   * Uses full replacement semantics so local deletions propagate.
+   */
+  _syncToServer() {
+    // Debounce — collapse rapid saves into one network call
+    clearTimeout(this._syncTimer);
+    this._syncTimer = setTimeout(() => {
+      try {
+        fetch('/api/alerts?action=sync-update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tasks_replace: this.tasks })
+        }).catch(() => { /* silent */ });
+      } catch { /* silent */ }
+    }, 500);
+  }
+
+  /**
+   * Pull the server snapshot and merge any remote changes into local state.
+   * Server tasks with newer `updated` timestamps overwrite local ones; tasks
+   * present locally but missing from the server (just created offline) are
+   * preserved. Called periodically by app.js.
+   */
+  async pullFromServer() {
+    try {
+      const res = await fetch('/api/alerts?action=sync-snapshot');
+      if (!res.ok) return false;
+      const data = await res.json();
+      const serverTasks = data?.state?.tasks;
+      if (!Array.isArray(serverTasks)) return false;
+
+      const byId = new Map();
+      this.tasks.forEach(t => byId.set(t.id, t));
+
+      let changed = false;
+      for (const sTask of serverTasks) {
+        if (!sTask || !sTask.id) continue;
+        const local = byId.get(sTask.id);
+        if (!local) {
+          byId.set(sTask.id, sTask);
+          changed = true;
+          continue;
+        }
+        const sT = new Date(sTask.updated || sTask.created || 0).getTime();
+        const lT = new Date(local.updated || local.created || 0).getTime();
+        if (sT > lT) {
+          byId.set(sTask.id, { ...local, ...sTask });
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        this.tasks = Array.from(byId.values())
+          .filter(t => t && typeof t.id === 'string' && typeof t.title === 'string');
+        // Persist locally WITHOUT re-syncing (avoid feedback loop)
+        try {
+          localStorage.setItem('jarvis_tasks', JSON.stringify(this.tasks));
+        } catch {}
+        this.updateBadge();
+        this.render();
+      }
+      return changed;
+    } catch {
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -223,35 +294,102 @@ class TaskManager {
   }
 
   _renderCard(task) {
+    const status   = task.status;
+    const shortId  = task.id.slice(-4).toUpperCase();
+    const isOverdueFlag = this._isOverdue(task);
+
     const dueDateHtml = task.due_date
-      ? `<span class="task-due ${this._isDueSoon(task.due_date) ? 'due-soon' : ''}">Due: ${new Date(task.due_date).toLocaleDateString()}</span>`
+      ? `<span class="task-due-chip${isOverdueFlag ? ' overdue' : ''}">${this._formatDue(task.due_date)}</span>`
       : '';
 
-    const tagsHtml = task.tags?.length
-      ? `<div class="task-tags">${task.tags.map((tag) => `<span class="task-tag">${this.escapeHtml(tag)}</span>`).join('')}</div>`
-      : '';
-
-    const moveBtns = [
-      task.status !== 'todo'       ? `<button class="task-move-btn" onclick="window.TaskManager.moveTask('${task.id}','todo')" title="Move to Todo">\u2190 Todo</button>` : '',
-      task.status !== 'inprogress' ? `<button class="task-move-btn" onclick="window.TaskManager.moveTask('${task.id}','inprogress')" title="In Progress">\u26a1 In Progress</button>` : '',
-      task.status !== 'done'       ? `<button class="task-move-btn" onclick="window.TaskManager.moveTask('${task.id}','done')" title="Mark Done">\u2713 Done</button>` : ''
+    const statusBtns = [
+      status !== 'inprogress' ? `<button class="task-status-btn" onclick="window.TaskManager.moveTask('${task.id}','inprogress')" title="Move to In Progress">&#9654;</button>` : '',
+      status !== 'done'       ? `<button class="task-status-btn done" onclick="window.TaskManager.moveTask('${task.id}','done')" title="Mark Done">&#10003;</button>` : ''
     ].filter(Boolean).join('');
+
+    const descHtml = task.description
+      ? `<div class="task-card-desc">${this.escapeHtml(task.description.substring(0, 80))}${task.description.length > 80 ? '...' : ''}</div>`
+      : '';
 
     return `
       <div class="task-card priority-${task.priority}" draggable="true" data-id="${task.id}" data-status="${task.status}">
-        <div class="task-card-header">
-          <span class="task-title">${this.escapeHtml(task.title)}</span>
-          <button class="task-delete" onclick="window.TaskManager.deleteTask('${task.id}')" title="Delete task" aria-label="Delete task">&#x2715;</button>
+        <div class="task-card-top">
+          <span class="task-card-id">#${shortId}</span>
+          <div class="task-card-actions">
+            <button class="task-action-btn" onclick="window.ExpandModal && window.ExpandModal.open('Task Detail', window.TaskManager.getTaskDetailHTML('${task.id}'))" title="View detail">&#8857;</button>
+            <button class="task-action-btn danger" onclick="window.TaskManager.deleteTask('${task.id}')" title="Delete">&#x2715;</button>
+          </div>
         </div>
-        ${task.description ? `<div class="task-desc">${this.escapeHtml(task.description)}</div>` : ''}
-        ${tagsHtml}
-        <div class="task-footer">
-          <span class="task-priority-badge priority-${task.priority}">${task.priority.toUpperCase()}</span>
+        <div class="task-card-title">${this.escapeHtml(task.title)}</div>
+        ${descHtml}
+        <div class="task-card-footer">
+          <span class="priority-pip pip-${task.priority}"></span>
           ${dueDateHtml}
-          <div class="task-move-btns">${moveBtns}</div>
+          <div class="task-status-btns">${statusBtns}</div>
         </div>
       </div>
     `;
+  }
+
+  getTaskDetailHTML(id) {
+    const task = this.getTask(id);
+    if (!task) return '<p style="color:var(--text-muted);font-size:13px;">Task not found.</p>';
+
+    const statusLabels = { todo: 'TO DO', inprogress: 'IN PROGRESS', done: 'DONE' };
+    const priorityLabel = task.priority.toUpperCase();
+    const createdStr    = task.created ? new Date(task.created).toLocaleString() : '—';
+    const updatedStr    = task.updated ? new Date(task.updated).toLocaleString() : '—';
+    const dueDateStr    = task.due_date ? new Date(task.due_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : null;
+    const overdueFlag   = this._isOverdue(task);
+
+    const tagsHtml = task.tags?.length
+      ? task.tags.map(t => `<span style="padding:2px 8px;border-radius:10px;border:1px solid var(--glass-border);font-size:11px;font-family:var(--font-mono);color:var(--text-muted);">${this.escapeHtml(t)}</span>`).join('')
+      : '';
+
+    return `
+      <div class="task-detail-header">
+        <div class="task-detail-title">${this.escapeHtml(task.title)}</div>
+        <div class="task-detail-meta">
+          <span class="task-detail-badge ${task.priority}">${priorityLabel}</span>
+          <span class="task-detail-status">${statusLabels[task.status] || task.status}</span>
+          ${dueDateStr ? `<span class="task-detail-status${overdueFlag ? '" style="color:var(--red);border-color:rgba(255,51,102,0.3)' : ''}">${overdueFlag ? 'OVERDUE — ' : ''}Due ${dueDateStr}</span>` : ''}
+        </div>
+      </div>
+      ${task.description ? `<div class="task-detail-desc">${this.escapeHtml(task.description)}</div>` : ''}
+      ${tagsHtml ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;">${tagsHtml}</div>` : ''}
+      <div class="modal-detail-grid" style="margin-top:16px;">
+        <div class="task-detail-field">
+          <div class="task-detail-field-label">Created</div>
+          <div class="task-detail-field-val" style="font-family:var(--font-mono);font-size:12px;">${createdStr}</div>
+        </div>
+        ${task.updated ? `<div class="task-detail-field"><div class="task-detail-field-label">Last Updated</div><div class="task-detail-field-val" style="font-family:var(--font-mono);font-size:12px;">${updatedStr}</div></div>` : ''}
+        <div class="task-detail-field">
+          <div class="task-detail-field-label">Task ID</div>
+          <div class="task-detail-field-val" style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted);">${this.escapeHtml(task.id)}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;">
+        ${task.status !== 'todo'       ? `<button class="btn-ghost" onclick="window.TaskManager.moveTask('${task.id}','todo');window.ExpandModal.close()">&#8592; To Do</button>` : ''}
+        ${task.status !== 'inprogress' ? `<button class="btn-primary" onclick="window.TaskManager.moveTask('${task.id}','inprogress');window.ExpandModal.close()">&#9654; In Progress</button>` : ''}
+        ${task.status !== 'done'       ? `<button class="btn-primary" onclick="window.TaskManager.moveTask('${task.id}','done');window.ExpandModal.close()">&#10003; Mark Done</button>` : ''}
+        <button class="btn-danger" onclick="window.TaskManager.deleteTask('${task.id}');window.ExpandModal.close()" style="margin-left:auto;">&#x2715; Delete</button>
+      </div>
+    `;
+  }
+
+  _formatDue(dueDateStr) {
+    try {
+      const d    = new Date(dueDateStr);
+      const now  = new Date();
+      const diff = Math.ceil((d - now) / 86400000);
+      if (diff < 0)   return `${Math.abs(diff)}d overdue`;
+      if (diff === 0) return 'Due today';
+      if (diff === 1) return 'Due tomorrow';
+      if (diff <= 7)  return `Due in ${diff}d`;
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } catch {
+      return dueDateStr;
+    }
   }
 
   // ---------------------------------------------------------------------------

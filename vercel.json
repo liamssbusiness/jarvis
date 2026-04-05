@@ -1,7 +1,5 @@
 {
   "version": 2,
-  "name": "jarvis-dashboard",
-  "buildCommand": null,
   "outputDirectory": ".",
   "routes": [
     {
@@ -13,10 +11,6 @@
       "dest": "/$1"
     }
   ],
-  "env": {
-    "ANTHROPIC_API_KEY": "@anthropic_api_key",
-    "NEWS_API_KEY": "@news_api_key"
-  },
   "headers": [
     {
       "source": "/api/(.*)",

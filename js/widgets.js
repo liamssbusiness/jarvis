@@ -50,13 +50,14 @@ class WidgetManager {
 
   async loadWeather() {
     try {
-      let url = '/api/weather';
+      let url = '/api/weather?units=fahrenheit';
       if (this.userLocation.lat !== null && this.userLocation.lon !== null) {
-        url += `?lat=${encodeURIComponent(this.userLocation.lat)}&lon=${encodeURIComponent(this.userLocation.lon)}`;
+        url += `&lat=${encodeURIComponent(this.userLocation.lat)}&lon=${encodeURIComponent(this.userLocation.lon)}`;
       }
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      this._lastWeatherData = data;
       this.updateWeatherWidget(data);
       this.updateWeatherHeader(data);
     } catch (e) {
@@ -76,16 +77,22 @@ class WidgetManager {
     setEl('w-wind', `${data.wind_speed} km/h wind`);
     setEl('w-location', data.location || this.defaultLocation);
     setEl('w-feels-like', data.feels_like != null ? `Feels like ${data.feels_like}°${data.unit}` : '');
-    setEl('w-uv', data.uv_index != null ? `UV ${data.uv_index}` : '');
-
-    // Update weather icon if present
+    // High/Low for the day — use the same unit as the API returns
+    if (data.high != null && data.low != null) {
+      const unit = data.unit || 'F';
+      setEl('w-high-low', `↑${data.high}°${unit} ↓${data.low}°${unit}`);
+    }
     const iconEl = document.getElementById('w-icon');
     if (iconEl && data.icon) iconEl.textContent = data.icon;
   }
 
   updateWeatherHeader(data) {
     const el = document.getElementById('weather-header');
-    if (el) el.textContent = `${data.icon || '\uD83C\uDF21'} ${data.temperature}°${data.unit}`;
+    if (el) {
+      const unit = data.unit || 'F';
+      const highLow = (data.high != null && data.low != null) ? ` ↑${data.high}°${unit} ↓${data.low}°${unit}` : '';
+      el.textContent = `${data.icon || '🌡'} ${data.temperature}°${unit}${highLow}`;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -107,17 +114,18 @@ class WidgetManager {
   updateNewsWidget(articles) {
     const list = document.getElementById('news-list');
     if (!list) return;
+    this._lastNewsArticles = articles;
 
     if (!articles.length) {
       list.innerHTML = '<div class="news-item news-empty">No news available</div>';
       return;
     }
 
-    list.innerHTML = articles.map((a) => {
-      const safeUrl = this._safeUrl(a.url);
+    list.innerHTML = articles.slice(0, 5).map((a) => {
+      const safeUrl   = this._safeUrl(a.url);
       const safeTitle = this._escapeHtml(a.title || 'Untitled');
-      const safeSource = this._escapeHtml(a.source || '');
-      const pubDate = a.publishedAt ? this._formatRelativeTime(a.publishedAt) : '';
+      const safeSource= this._escapeHtml(a.source || '');
+      const pubDate   = a.publishedAt ? this._formatRelativeTime(a.publishedAt) : '';
       return `
         <div class="news-item" role="button" tabindex="0"
              onclick="window.open(${safeUrl}, '_blank', 'noopener,noreferrer')"
@@ -155,6 +163,7 @@ class WidgetManager {
   updateStocksWidget(prices) {
     const list = document.getElementById('stocks-list');
     if (!list) return;
+    this._lastStockPrices = prices;
 
     const items = Object.values(prices);
     if (!items.length) {
@@ -164,17 +173,17 @@ class WidgetManager {
 
     list.innerHTML = items.map((item) => {
       const change = parseFloat(item.change);
-      const price = parseFloat(item.price);
-      const isUp = change >= 0;
+      const price  = parseFloat(item.price);
+      const isUp   = change >= 0;
       const displayPrice = this._formatPrice(price);
-      const changeAbs = Math.abs(change).toFixed(2);
+      const changeAbs    = Math.abs(change).toFixed(2);
       const dirArrow = isUp ? '\u25b2' : '\u25bc';
       const dirClass = isUp ? 'up' : 'down';
       return `
         <div class="stock-item">
           <span class="stock-sym">${this._escapeHtml(item.symbol)}</span>
           <span class="stock-price">${displayPrice}</span>
-          <span class="stock-change ${dirClass}">${dirArrow}${changeAbs}%</span>
+          <span class="stock-chg ${dirClass}">${dirArrow}${changeAbs}%</span>
         </div>
       `;
     }).join('');
@@ -197,7 +206,7 @@ class WidgetManager {
   }
 
   // ---------------------------------------------------------------------------
-  // Widget Dragging
+  // Widget Dragging — free-drag with lock/unlock
   // ---------------------------------------------------------------------------
 
   makeWidgetsDraggable() {
@@ -205,65 +214,298 @@ class WidgetManager {
     this._dragCleanup.forEach((fn) => fn());
     this._dragCleanup = [];
 
+    this._widgetsLocked = this._loadLockState();
+    this._createLockToggle();
+
+    const layer = document.getElementById('widgets-layer');
+
     document.querySelectorAll('.hud-widget').forEach((widget) => {
       const header = widget.querySelector('.widget-header');
       if (!header) return;
+      header.style.cursor = this._widgetsLocked ? 'default' : 'grab';
 
-      // Restore saved position
+      // Restore saved position for free-drag mode
       const saved = this._loadWidgetPos(widget.id);
-      if (saved) {
+      if (saved && !this._widgetsLocked) {
+        if (layer) layer.classList.add('free-drag');
         widget.style.position = 'absolute';
         widget.style.left = saved.left;
         widget.style.top  = saved.top;
       }
+      if (this._widgetsLocked) {
+        widget.classList.add('widget-locked');
+      }
 
       let isDragging = false;
+      let hasDragged = false;
       let startX, startY, startLeft, startTop;
 
-      const onMouseDown = (e) => {
-        // Only respond to primary mouse button
-        if (e.button !== 0) return;
+      const startDrag = (clientX, clientY) => {
+        if (this._widgetsLocked) return;
         isDragging = true;
-        widget.style.position = 'absolute';
-        startX    = e.clientX;
-        startY    = e.clientY;
+        hasDragged = false;
+
+        // Switch layer to free-drag mode
+        if (layer && !layer.classList.contains('free-drag')) {
+          // Snapshot current viewport positions before switching (free-drag layer is inset:0)
+          document.querySelectorAll('.hud-widget').forEach((w) => {
+            const rect = w.getBoundingClientRect();
+            w.style.position = 'absolute';
+            w.style.left = `${rect.left}px`;
+            w.style.top = `${rect.top}px`;
+          });
+          layer.classList.add('free-drag');
+        }
+
+        startX    = clientX;
+        startY    = clientY;
         startLeft = widget.offsetLeft;
         startTop  = widget.offsetTop;
         widget.style.zIndex = '1000';
         widget.classList.add('dragging');
-        e.preventDefault();
+        header.style.cursor = 'grabbing';
       };
 
-      const onMouseMove = (e) => {
+      const moveDrag = (clientX, clientY) => {
         if (!isDragging) return;
-        const newLeft = startLeft + (e.clientX - startX);
-        const newTop  = startTop  + (e.clientY - startY);
-        // Clamp inside viewport
+        const dx = clientX - startX;
+        const dy = clientY - startY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasDragged = true;
+        const newLeft = startLeft + dx;
+        const newTop  = startTop  + dy;
+        // Clamp within viewport — allow dragging anywhere on screen
         const maxLeft = window.innerWidth  - widget.offsetWidth;
         const maxTop  = window.innerHeight - widget.offsetHeight;
         widget.style.left = `${Math.max(0, Math.min(newLeft, maxLeft))}px`;
         widget.style.top  = `${Math.max(0, Math.min(newTop,  maxTop))}px`;
       };
 
-      const onMouseUp = () => {
+      const endDrag = () => {
         if (!isDragging) return;
         isDragging = false;
         widget.style.zIndex = '';
         widget.classList.remove('dragging');
+        header.style.cursor = 'grab';
         this._saveWidgetPos(widget.id, widget.style.left, widget.style.top);
       };
+
+      // Mouse events
+      const onMouseDown = (e) => {
+        if (e.button !== 0 || this._widgetsLocked) return;
+        startDrag(e.clientX, e.clientY);
+        e.preventDefault();
+      };
+      const onMouseMove = (e) => moveDrag(e.clientX, e.clientY);
+      const onMouseUp   = () => endDrag();
+
+      // Touch events
+      const onTouchStart = (e) => {
+        if (this._widgetsLocked) return;
+        const t = e.touches[0];
+        startDrag(t.clientX, t.clientY);
+      };
+      const onTouchMove = (e) => {
+        const t = e.touches[0];
+        moveDrag(t.clientX, t.clientY);
+        if (hasDragged) e.preventDefault();
+      };
+      const onTouchEnd = () => endDrag();
 
       header.addEventListener('mousedown', onMouseDown);
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
+      header.addEventListener('touchstart', onTouchStart, { passive: true });
+      document.addEventListener('touchmove', onTouchMove, { passive: false });
+      document.addEventListener('touchend', onTouchEnd);
 
-      // Register cleanup for re-initialisation
+      // Click-to-expand — fires only if not dragged
+      const onWidgetClick = () => {
+        if (hasDragged) return;
+        this._expandWidget(widget);
+      };
+      widget.addEventListener('click', onWidgetClick);
+
+      widget.setAttribute('data-clickable', 'true');
+
       this._dragCleanup.push(() => {
         header.removeEventListener('mousedown', onMouseDown);
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
+        header.removeEventListener('touchstart', onTouchStart);
+        document.removeEventListener('touchmove', onTouchMove);
+        document.removeEventListener('touchend', onTouchEnd);
+        widget.removeEventListener('click', onWidgetClick);
       });
     });
+  }
+
+  _createLockToggle() {
+    // Remove existing toggle if any
+    const existing = document.querySelector('.widget-lock-toggle');
+    if (existing) existing.remove();
+
+    const btn = document.createElement('button');
+    btn.className = 'widget-lock-toggle' + (this._widgetsLocked ? ' locked' : '');
+    this._updateLockBtn(btn);
+
+    btn.addEventListener('click', () => {
+      this._widgetsLocked = !this._widgetsLocked;
+      this._saveLockState(this._widgetsLocked);
+      btn.classList.toggle('locked', this._widgetsLocked);
+      this._updateLockBtn(btn);
+
+      document.querySelectorAll('.hud-widget').forEach((w) => {
+        const hdr = w.querySelector('.widget-header');
+        if (this._widgetsLocked) {
+          w.classList.add('widget-locked');
+          if (hdr) hdr.style.cursor = 'default';
+        } else {
+          w.classList.remove('widget-locked');
+          if (hdr) hdr.style.cursor = 'grab';
+        }
+      });
+
+      const msg = this._widgetsLocked ? 'Widgets locked in place' : 'Widgets unlocked — drag to reposition';
+      window.NotifManager?.toast(msg, 'info', 2000);
+    });
+
+    document.getElementById('app')?.appendChild(btn);
+  }
+
+  _updateLockBtn(btn) {
+    if (this._widgetsLocked) {
+      btn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5 7V5a3 3 0 016 0v2"/></svg> LOCKED`;
+    } else {
+      btn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5 7V5a3 3 0 016 0" /><line x1="11" y1="5" x2="13" y2="3"/></svg> UNLOCKED`;
+    }
+  }
+
+  _saveLockState(locked) {
+    try { localStorage.setItem('widgets-locked', JSON.stringify(locked)); } catch {}
+  }
+
+  _loadLockState() {
+    try {
+      const v = localStorage.getItem('widgets-locked');
+      return v ? JSON.parse(v) : true; // Default: locked
+    } catch { return true; }
+  }
+
+  _expandWidget(widget) {
+    const type = widget.dataset.widget;
+    if (!type || !window.ExpandModal) return;
+
+    switch (type) {
+      case 'weather': return this._expandWeather();
+      case 'stocks':  return this._expandStocks();
+      case 'news':    return this._expandNews();
+      default: break;
+    }
+  }
+
+  _expandWeather() {
+    const d = this._lastWeatherData;
+    if (!d) {
+      window.ExpandModal.open('Weather', '<p style="color:var(--text-muted);font-size:13px;">Weather data not yet loaded.</p>');
+      return;
+    }
+    const unit = d.unit || 'F';
+    const icon = d.icon || '';
+    const highLow = (d.high != null && d.low != null)
+      ? `<div class="weather-exp-stat"><div class="weather-exp-stat-label">HIGH / LOW</div><div class="weather-exp-stat-val">${d.high}° / ${d.low}°</div></div>`
+      : '';
+
+    const html = `
+      <div class="weather-expanded">
+        <div class="weather-exp-main">
+          <div class="weather-exp-temp">${icon} ${d.temperature}°${unit}</div>
+          <div class="weather-exp-cond">${this._escapeHtml(d.condition || '')}</div>
+        </div>
+        <div class="weather-exp-grid">
+          <div class="weather-exp-stat">
+            <div class="weather-exp-stat-label">FEELS LIKE</div>
+            <div class="weather-exp-stat-val">${d.feels_like != null ? d.feels_like + '°' : '--'}</div>
+          </div>
+          <div class="weather-exp-stat">
+            <div class="weather-exp-stat-label">HUMIDITY</div>
+            <div class="weather-exp-stat-val">${d.humidity != null ? d.humidity + '%' : '--'}</div>
+          </div>
+          <div class="weather-exp-stat">
+            <div class="weather-exp-stat-label">WIND</div>
+            <div class="weather-exp-stat-val">${d.wind_speed != null ? d.wind_speed + ' km/h' : '--'}</div>
+          </div>
+          ${highLow}
+          ${d.location ? `<div class="weather-exp-stat" style="grid-column:1/-1"><div class="weather-exp-stat-label">LOCATION</div><div class="weather-exp-stat-val">${this._escapeHtml(d.location)}</div></div>` : ''}
+        </div>
+      </div>
+    `;
+    window.ExpandModal.open('Weather — Current Conditions', html);
+  }
+
+  _expandStocks() {
+    const prices = this._lastStockPrices;
+    if (!prices || !Object.keys(prices).length) {
+      window.ExpandModal.open('Markets', '<p style="color:var(--text-muted);font-size:13px;">Market data not yet loaded.</p>');
+      return;
+    }
+
+    const rows = Object.values(prices).map(item => {
+      const change   = parseFloat(item.change);
+      const price    = parseFloat(item.price);
+      const isUp     = change >= 0;
+      const dirArrow = isUp ? '▲' : '▼';
+      const dirClass = isUp ? 'up' : 'down';
+      const displayPrice = this._formatPrice(price);
+      const changeAbs = Math.abs(change).toFixed(2);
+      // ASCII sparkline approximation based on change
+      const sparkLen = 8;
+      const mid = Math.floor(sparkLen / 2);
+      const fill = Math.round((Math.min(Math.abs(change), 5) / 5) * mid);
+      const spark = isUp
+        ? '▁'.repeat(mid) + '▄'.repeat(fill) + '█'.repeat(sparkLen - mid - fill)
+        : '█'.repeat(sparkLen - mid - fill) + '▄'.repeat(fill) + '▁'.repeat(mid);
+
+      return `
+        <div class="modal-stock-row">
+          <span class="modal-stock-sym">${this._escapeHtml(item.symbol)}</span>
+          <span class="modal-stock-type">${this._escapeHtml(item.type || 'EQUITY')}</span>
+          <span class="modal-stock-sparkline">${spark}</span>
+          <span class="modal-stock-price">${displayPrice}</span>
+          <span class="modal-stock-chg ${dirClass}">${dirArrow}${changeAbs}%</span>
+        </div>
+      `;
+    }).join('');
+
+    window.ExpandModal.open('Markets — Live Prices', `<div class="modal-stock-list">${rows}</div>`);
+  }
+
+  _expandNews() {
+    const articles = this._lastNewsArticles || [];
+    if (!articles.length) {
+      window.ExpandModal.open('Intel Feed', '<p style="color:var(--text-muted);font-size:13px;">No articles loaded yet.</p>');
+      return;
+    }
+
+    const rows = articles.map(a => {
+      const safeUrl   = this._safeUrl(a.url);
+      const safeTitle = this._escapeHtml(a.title || 'Untitled');
+      const safeDesc  = this._escapeHtml((a.description || '').substring(0, 160));
+      const safeSource= this._escapeHtml(a.source || '');
+      const pubDate   = a.publishedAt ? this._formatRelativeTime(a.publishedAt) : '';
+      return `
+        <div class="modal-news-item">
+          <div class="modal-news-title">${safeTitle}</div>
+          ${safeDesc ? `<div style="font-size:12px;color:var(--text-muted);margin:5px 0;line-height:1.5;">${safeDesc}${a.description && a.description.length > 160 ? '...' : ''}</div>` : ''}
+          <div class="modal-news-meta">
+            <span class="modal-news-source">${safeSource}</span>
+            ${pubDate ? `<span class="modal-news-time">${pubDate}</span>` : ''}
+            ${safeUrl !== `'#'` ? `<a class="modal-news-link" href=${safeUrl} target="_blank" rel="noopener noreferrer">Read →</a>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    window.ExpandModal.open('Intel Feed — All Articles', `<div class="modal-news-list">${rows}</div>`);
   }
 
   // ---------------------------------------------------------------------------

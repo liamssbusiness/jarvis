@@ -1,3 +1,37 @@
+// ── Expand Modal ───────────────────────────────────────────────────────────────
+class ExpandModal {
+  constructor() {
+    this.modal = null;
+    this.title = null;
+    this.body  = null;
+    // Bind escape key always
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') this.close(); });
+  }
+  _init() {
+    if (this.modal) return;
+    this.modal = document.getElementById('expand-modal');
+    this.title = document.getElementById('expand-modal-title');
+    this.body  = document.getElementById('expand-modal-body');
+    document.getElementById('expand-modal-close')?.addEventListener('click', () => this.close());
+    document.querySelector('.expand-modal-backdrop')?.addEventListener('click', () => this.close());
+  }
+  open(title, html) {
+    this._init();
+    if (!this.modal) return;
+    this.title.textContent = title;
+    this.body.innerHTML = html;
+    this.modal.classList.remove('hidden');
+    document.body.classList.add('modal-open');
+  }
+  close() {
+    this._init();
+    if (!this.modal) return;
+    this.modal.classList.add('hidden');
+    document.body.classList.remove('modal-open');
+  }
+}
+window.ExpandModal = new ExpandModal();
+
 // JARVIS App Initialization
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -18,14 +52,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Tasks
     window.TaskManager = new TaskManager();
 
+    // Kick off an initial server sync + periodic polling every 30s
+    startServerSync();
+
     // JARVIS engine — depends on all others being ready
     window.JarvisEngine = new JarvisEngine();
 
     // Wire up dock navigation
     setupDock();
 
+    // Subtle arc reactor parallax on mouse movement
+    setupArcReactorParallax();
+
     // Wire up header / panel controls
     setupHeaderButtons();
+
+    // Chat resize handle
+    setupChatResize();
 
     // Attempt local agent connection (optional feature)
     connectLocalAgent();
@@ -63,6 +106,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateGreeting();
     startClock();
     startUptime();
+    initJarvisCharacter();
 
   } catch (error) {
     console.error('JARVIS initialization error:', error);
@@ -76,6 +120,139 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Dock navigation
 // ---------------------------------------------------------------------------
 
+// Full panels that replace the main content area
+const FULL_PANELS = ['tasks', 'briefing'];
+
+function showHomeView() {
+  const main = document.getElementById('main');
+  if (main) main.classList.remove('full-panel-active');
+  const widgetsLayer = document.getElementById('widgets-layer');
+  const arcContainer = document.getElementById('arc-reactor-container');
+  const chatContainer = document.getElementById('chat-container');
+  if (widgetsLayer)  widgetsLayer.style.display  = '';
+  if (arcContainer)  arcContainer.style.display  = '';
+  if (chatContainer) chatContainer.style.display = '';
+}
+
+function showFullPanel(panelEl) {
+  const main = document.getElementById('main');
+  if (main) main.classList.add('full-panel-active');
+  const widgetsLayer = document.getElementById('widgets-layer');
+  const arcContainer = document.getElementById('arc-reactor-container');
+  const chatContainer = document.getElementById('chat-container');
+  if (widgetsLayer)  widgetsLayer.style.display  = 'none';
+  if (arcContainer)  arcContainer.style.display  = 'none';
+  if (chatContainer) chatContainer.style.display = 'none';
+  panelEl.classList.remove('hidden');
+}
+
+function setupArcReactorParallax() {
+  const reactor = document.getElementById('arc-reactor');
+  const sphere = document.querySelector('.arc-sphere');
+  const core = document.querySelector('.arc-core');
+  if (!reactor || !sphere) return;
+
+  let rafId = null;
+  let targetX = 0, targetY = 0;
+  let currentX = 0, currentY = 0;
+
+  const onMove = (e) => {
+    const rect = reactor.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    // Distance from center, normalized to [-1, 1], subtle
+    targetX = Math.max(-1, Math.min(1, (e.clientX - cx) / (window.innerWidth / 2)));
+    targetY = Math.max(-1, Math.min(1, (e.clientY - cy) / (window.innerHeight / 2)));
+    if (!rafId) rafId = requestAnimationFrame(tick);
+  };
+
+  const tick = () => {
+    // Ease toward target
+    currentX += (targetX - currentX) * 0.08;
+    currentY += (targetY - currentY) * 0.08;
+    // Apply parallax to arc-core (sphere's parent) to avoid conflict with breathe scale
+    const tx = currentX * 5;
+    const ty = currentY * 5;
+    if (core) core.style.transform = `translate(${tx}px, ${ty}px)`;
+    if (Math.abs(targetX - currentX) > 0.001 || Math.abs(targetY - currentY) > 0.001) {
+      rafId = requestAnimationFrame(tick);
+    } else {
+      rafId = null;
+    }
+  };
+
+  window.addEventListener('mousemove', onMove, { passive: true });
+}
+
+// ---------------------------------------------------------------------------
+// Chat resize — drag left edge to resize chat panel
+// ---------------------------------------------------------------------------
+function setupChatResize() {
+  const handle = document.getElementById('chat-resize-handle');
+  const main = document.getElementById('main');
+  if (!handle || !main) return;
+
+  const MIN_WIDTH = 320;
+  const MAX_WIDTH = 900;
+  const WIDGET_WIDTH = 272; // matches --widget-width
+
+  // Restore saved width
+  const savedWidth = parseInt(localStorage.getItem('chat-width') || '0', 10);
+  if (savedWidth >= MIN_WIDTH && savedWidth <= MAX_WIDTH) {
+    main.style.gridTemplateColumns = `${WIDGET_WIDTH}px 1fr ${savedWidth}px`;
+  }
+
+  let isResizing = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  const onMouseDown = (e) => {
+    if (e.button !== 0) return;
+    isResizing = true;
+    startX = e.clientX;
+    const chatEl = document.getElementById('chat-container');
+    startWidth = chatEl ? chatEl.offsetWidth : 380;
+    handle.classList.add('resizing');
+    document.body.classList.add('resizing-chat');
+    e.preventDefault();
+  };
+
+  const onMouseMove = (e) => {
+    if (!isResizing) return;
+    const dx = startX - e.clientX; // dragging left increases width
+    const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startWidth + dx));
+    main.style.gridTemplateColumns = `${WIDGET_WIDTH}px 1fr ${newWidth}px`;
+  };
+
+  const onMouseUp = () => {
+    if (!isResizing) return;
+    isResizing = false;
+    handle.classList.remove('resizing');
+    document.body.classList.remove('resizing-chat');
+    const chatEl = document.getElementById('chat-container');
+    if (chatEl) {
+      localStorage.setItem('chat-width', String(chatEl.offsetWidth));
+    }
+  };
+
+  handle.addEventListener('mousedown', onMouseDown);
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseup', onMouseUp);
+
+  // Touch support
+  handle.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    onMouseDown({ button: 0, clientX: t.clientX, preventDefault: () => {} });
+  }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    if (!isResizing) return;
+    const t = e.touches[0];
+    onMouseMove({ clientX: t.clientX });
+    e.preventDefault();
+  }, { passive: false });
+  document.addEventListener('touchend', onMouseUp);
+}
+
 function setupDock() {
   const dockBtns = document.querySelectorAll('.dock-btn');
 
@@ -86,17 +263,16 @@ function setupDock() {
       // Home — close everything and show widgets
       if (panel === 'home') {
         closeAllPanels();
+        showHomeView();
         dockBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        const widgetsLayer = document.getElementById('widgets-layer');
-        if (widgetsLayer) widgetsLayer.classList.remove('hidden-widgets');
         return;
       }
 
       // Widget layer toggle
       if (panel === 'widgets') {
         const widgetsLayer = document.getElementById('widgets-layer');
-        if (widgetsLayer) widgetsLayer.classList.toggle('hidden-widgets');
+        if (widgetsLayer) widgetsLayer.classList.toggle('widgets-hidden');
         btn.classList.toggle('active');
         return;
       }
@@ -116,12 +292,21 @@ function setupDock() {
       closeAllPanels();
 
       if (!isOpen) {
-        panelEl.classList.remove('hidden');
         dockBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
 
+        if (FULL_PANELS.includes(panel)) {
+          showFullPanel(panelEl);
+        } else {
+          showHomeView();
+          panelEl.classList.remove('hidden');
+        }
+
         // Trigger lazy content loads
         if (panel === 'briefing' && window.WidgetManager) {
+          // Update subtitle date
+          const subtitle = document.getElementById('briefing-date-subtitle');
+          if (subtitle) subtitle.textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
           window.WidgetManager.loadBriefing();
         }
         if (panel === 'tasks' && window.TaskManager) {
@@ -129,10 +314,26 @@ function setupDock() {
         }
       } else {
         // Panel was open — close it and restore home state
+        closeAllPanels();
+        showHomeView();
         dockBtns.forEach(b => b.classList.remove('active'));
         const homeBtn = document.querySelector('.dock-btn[data-panel="home"]');
         if (homeBtn) homeBtn.classList.add('active');
       }
+    });
+  });
+
+  // Wire up panel close buttons (.panel-close-btn)
+  document.querySelectorAll('.panel-close-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const panel = btn.dataset.panel;
+      const panelEl = panel ? document.getElementById(`panel-${panel}`) : null;
+      if (panelEl) panelEl.classList.add('hidden');
+      closeAllPanels();
+      showHomeView();
+      dockBtns.forEach(b => b.classList.remove('active'));
+      const homeBtn = document.querySelector('.dock-btn[data-panel="home"]');
+      if (homeBtn) homeBtn.classList.add('active');
     });
   });
 }
@@ -151,58 +352,101 @@ function setupHeaderButtons() {
     });
   }
 
-  // Panel close buttons (data-panel="tasks" etc.)
+  // Old-style .panel-close buttons (fallback)
   document.querySelectorAll('.panel-close').forEach(btn => {
     btn.addEventListener('click', () => {
       const panel = btn.dataset.panel;
       const panelEl = document.getElementById(`panel-${panel}`);
       if (panelEl) panelEl.classList.add('hidden');
-
-      // Return home state to dock
+      showHomeView();
       document.querySelectorAll('.dock-btn').forEach(b => b.classList.remove('active'));
       const homeBtn = document.querySelector('.dock-btn[data-panel="home"]');
       if (homeBtn) homeBtn.classList.add('active');
     });
   });
 
-  // Quick task add from task panel toolbar
-  const addTaskBtn = document.getElementById('add-task-btn');
-  const taskInput = document.getElementById('task-input');
-  const taskPriority = document.getElementById('task-priority');
+  // New Task button (shows task form)
+  const newTaskBtn = document.getElementById('new-task-btn');
+  const taskForm   = document.getElementById('task-form');
+  const tfCancel   = document.getElementById('tf-cancel');
+  const tfSubmit   = document.getElementById('tf-submit');
+  const tfTitle    = document.getElementById('tf-title');
 
-  if (addTaskBtn && taskInput) {
-    addTaskBtn.addEventListener('click', () => {
-      const title = taskInput.value.trim();
-      if (!title) return;
-      const priority = taskPriority ? taskPriority.value : 'medium';
+  if (newTaskBtn && taskForm) {
+    newTaskBtn.addEventListener('click', () => {
+      taskForm.classList.toggle('task-form-open');
+      if (taskForm.classList.contains('task-form-open')) {
+        tfTitle?.focus();
+      }
+    });
+  }
+
+  if (tfCancel && taskForm) {
+    tfCancel.addEventListener('click', () => {
+      taskForm.classList.remove('task-form-open');
+      _clearTaskForm();
+    });
+  }
+
+  if (tfSubmit) {
+    tfSubmit.addEventListener('click', () => {
+      const title = tfTitle?.value.trim();
+      if (!title) {
+        tfTitle?.focus();
+        return;
+      }
+      const priority = document.getElementById('tf-priority')?.value || 'medium';
+      const due_date = document.getElementById('tf-due')?.value || null;
+      const labelVal = document.getElementById('tf-label')?.value.trim();
+      const tags     = labelVal ? [labelVal] : [];
+      const desc     = document.getElementById('tf-desc')?.value.trim() || '';
+
       if (window.TaskManager) {
         window.TaskManager.addTask({
-          id: Date.now().toString(),
           title,
+          description: desc,
           priority,
           status: 'todo',
+          due_date,
+          tags,
           created: new Date().toISOString()
         });
       }
-      taskInput.value = '';
-      taskInput.focus();
+      taskForm?.classList.remove('task-form-open');
+      _clearTaskForm();
     });
+  }
 
-    taskInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        addTaskBtn.click();
-      }
+  // Enter key on title field submits
+  tfTitle?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); tfSubmit?.click(); }
+  });
+
+  // Refresh briefing button
+  const refreshBriefingBtn = document.getElementById('refresh-briefing-btn');
+  if (refreshBriefingBtn) {
+    refreshBriefingBtn.addEventListener('click', () => {
+      if (window.WidgetManager) window.WidgetManager.loadBriefing();
     });
   }
 }
 
+function _clearTaskForm() {
+  const ids = ['tf-title', 'tf-desc', 'tf-due', 'tf-label'];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  const sel = document.getElementById('tf-priority');
+  if (sel) sel.value = 'medium';
+}
+
 // ---------------------------------------------------------------------------
-// Utility: close all side panels
+// Utility: close all side panels and full panels
 // ---------------------------------------------------------------------------
 
 function closeAllPanels() {
-  document.querySelectorAll('.side-panel').forEach(p => p.classList.add('hidden'));
+  document.querySelectorAll('.side-panel, .full-panel').forEach(p => p.classList.add('hidden'));
 }
 
 // ---------------------------------------------------------------------------
@@ -348,4 +592,80 @@ function startUptime() {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ---------------------------------------------------------------------------
+// Server sync — pulls remote task/alert state so Telegram-created tasks
+// appear on the dashboard. Silent on failure (server may be cold, /tmp wiped).
+// ---------------------------------------------------------------------------
+function startServerSync() {
+  const SYNC_INTERVAL_MS = 30000;
+
+  const tick = async () => {
+    try {
+      if (window.TaskManager && typeof window.TaskManager.pullFromServer === 'function') {
+        await window.TaskManager.pullFromServer();
+      }
+    } catch { /* silent */ }
+  };
+
+  // Initial pull shortly after boot
+  setTimeout(tick, 2000);
+  // Then every 30s
+  setInterval(tick, SYNC_INTERVAL_MS);
+
+  // Also sync when tab regains focus
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') tick();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// JARVIS Daily Character — changes outfit based on day of week
+// ---------------------------------------------------------------------------
+function initJarvisCharacter() {
+  const outfitEl = document.getElementById('jarvis-outfit');
+  const labelEl = document.getElementById('jarvis-style-label');
+  if (!outfitEl) return;
+
+  // 7 modes — one per day of week (Sun=0 through Sat=6)
+  // The orb is now a pure CSS hologram; labels change per mode
+  const modes = [
+    { label: 'SUNDAY MODE', title: 'Relaxed Sunday' },
+    { label: 'BOARDROOM', title: 'Monday Executive' },
+    { label: 'DEEP WORK', title: 'Tuesday Focus Mode' },
+    { label: 'STRATEGY', title: 'Wednesday Architect' },
+    { label: 'EXECUTE', title: 'Thursday Operator' },
+    { label: 'CASUAL FRI', title: 'Friday Vibes' },
+    { label: 'GYM MODE', title: 'Saturday Hustle' },
+  ];
+
+  const hour = new Date().getHours();
+  const dayOfWeek = new Date().getDay();
+  let mode = modes[dayOfWeek];
+
+  // Time-based overrides
+  if (hour >= 22 || hour < 6) {
+    mode = { label: 'NIGHT OWL', title: 'Late Night Mode' };
+  } else if (hour >= 6 && hour < 9) {
+    mode = { label: 'MORNING', title: 'Morning Startup' };
+  }
+
+  // Clear any emoji text — orb is CSS-only now
+  outfitEl.textContent = '';
+  outfitEl.title = mode.title;
+  if (labelEl) labelEl.textContent = mode.label;
+
+  // Click to cycle through modes
+  let currentIdx = dayOfWeek;
+  outfitEl.style.cursor = 'pointer';
+  outfitEl.addEventListener('click', () => {
+    currentIdx = (currentIdx + 1) % modes.length;
+    outfitEl.title = modes[currentIdx].title;
+    if (labelEl) labelEl.textContent = modes[currentIdx].label;
+    // Pulse animation on click
+    outfitEl.style.animation = 'none';
+    setTimeout(() => outfitEl.style.animation = '', 50);
+    window.NotifManager?.toast(`JARVIS: ${modes[currentIdx].title}`, 'info', 2000);
+  });
 }

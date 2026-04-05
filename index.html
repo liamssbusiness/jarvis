@@ -114,7 +114,11 @@
             </div>
             <div class="widget-row">
               <span class="label">FEELS</span>
-              <span id="w-feels" class="val">--&deg;</span>
+              <span id="w-feels-like" class="val">--&deg;</span>
+            </div>
+            <div class="widget-row">
+              <span class="label">TODAY</span>
+              <span id="w-high-low" class="val cyan">↑--°F ↓--°F</span>
             </div>
           </div>
         </div>
@@ -261,6 +265,12 @@
 
         <div id="jarvis-greeting" class="jarvis-greeting">Good day, Liam.</div>
 
+        <!-- JARVIS Character -->
+        <div id="jarvis-character" class="jarvis-character" title="J.A.R.V.I.S">
+          <div id="jarvis-outfit" class="jarvis-outfit"></div>
+          <div class="jarvis-char-label" id="jarvis-style-label"></div>
+        </div>
+
         <!-- Quick stats below arc -->
         <div class="arc-stats-row">
           <div class="arc-stat">
@@ -283,6 +293,7 @@
 
       <!-- RIGHT: Chat Interface -->
       <div id="chat-container">
+        <div id="chat-resize-handle" class="chat-resize-handle" title="Drag to resize chat"></div>
         <div class="chat-header">
           <div class="chat-header-left">
             <span class="chat-hex">
@@ -293,6 +304,10 @@
             <span>J.A.R.V.I.S INTERFACE</span>
           </div>
           <div class="chat-header-right">
+            <div class="chat-meta">
+              <span class="token-counter" title="Approximate tokens in session">&#128176; <span id="token-count">0</span> tokens</span>
+              <input type="text" id="chat-search" placeholder="Search chat..." class="chat-search" autocomplete="off">
+            </div>
             <span id="chat-model-badge" class="model-badge">claude-3.5</span>
             <button id="clear-chat-btn" class="chat-clear-btn" title="Clear chat">
               <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -335,78 +350,82 @@
         </div>
       </div><!-- /chat-container -->
 
-      <!-- Tasks Panel (toggleable overlay) -->
-      <div id="panel-tasks" class="side-panel hidden">
-        <div class="panel-header">
-          <div class="panel-header-left">
-            <svg viewBox="0 0 16 16" width="14" height="14">
-              <polygon points="8,1 14,4.5 14,11.5 8,15 2,11.5 2,4.5" fill="none" stroke="currentColor" stroke-width="1.2"/>
-            </svg>
-            <span>TASK BOARD</span>
+      <!-- Tasks Panel (full-page) -->
+      <div id="panel-tasks" class="full-panel hidden">
+        <div class="full-panel-header">
+          <div class="full-panel-title">
+            <span class="panel-icon">&#10022;</span>
+            <h1>Task Board</h1>
+            <span class="panel-subtitle">Liam's Projects</span>
           </div>
-          <button class="panel-close" data-panel="tasks">
-            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5">
-              <line x1="3" y1="3" x2="13" y2="13"/>
-              <line x1="13" y1="3" x2="3" y2="13"/>
-            </svg>
-          </button>
+          <div class="panel-actions">
+            <button id="new-task-btn" class="btn-primary">+ New Task</button>
+            <button class="panel-close-btn" data-panel="tasks">&#x2715;</button>
+          </div>
         </div>
-        <div class="panel-body">
-          <div class="task-input-row">
-            <input id="task-input" type="text" placeholder="Add new task...">
-            <select id="task-priority">
-              <option value="high">HIGH</option>
-              <option value="medium" selected>MED</option>
-              <option value="low">LOW</option>
-            </select>
-            <button id="add-task-btn">+</button>
+        <!-- Quick add form (collapsed by default via CSS transition) -->
+        <div id="task-form" class="task-form">
+          <div class="task-form-inner">
+            <input id="tf-title" type="text" placeholder="Task title..." class="task-form-input">
+            <textarea id="tf-desc" placeholder="Description (optional)..." class="task-form-textarea" rows="2"></textarea>
+            <div class="task-form-row">
+              <select id="tf-priority" class="task-form-select">
+                <option value="high">&#128308; High Priority</option>
+                <option value="medium" selected>&#128993; Medium Priority</option>
+                <option value="low">&#128994; Low Priority</option>
+              </select>
+              <input id="tf-due" type="date" class="task-form-input task-form-date">
+              <input id="tf-label" type="text" placeholder="Label (optional)" class="task-form-input task-form-label">
+            </div>
+            <div class="task-form-actions">
+              <button id="tf-cancel" class="btn-ghost">Cancel</button>
+              <button id="tf-submit" class="btn-primary">Create Task</button>
+            </div>
           </div>
-          <div id="task-board" class="kanban-board">
-            <div class="kanban-col" data-status="todo">
-              <div class="kanban-col-header todo-header">
-                <span>TO DO</span>
-                <span id="count-todo" class="badge badge-todo">0</span>
-              </div>
-              <div class="kanban-cards" id="col-todo"></div>
+        </div>
+        <!-- Kanban board -->
+        <div id="task-board" class="kanban-board">
+          <div class="kanban-col" data-status="todo">
+            <div class="kanban-col-header">
+              <div class="col-title"><span class="col-dot dot-todo"></span>TO DO</div>
+              <span id="count-todo" class="col-count">0</span>
             </div>
-            <div class="kanban-col" data-status="inprogress">
-              <div class="kanban-col-header inprogress-header">
-                <span>IN PROGRESS</span>
-                <span id="count-inprogress" class="badge badge-inprogress">0</span>
-              </div>
-              <div class="kanban-cards" id="col-inprogress"></div>
+            <div class="kanban-cards" id="col-todo"></div>
+          </div>
+          <div class="kanban-col" data-status="inprogress">
+            <div class="kanban-col-header">
+              <div class="col-title"><span class="col-dot dot-inprogress"></span>IN PROGRESS</div>
+              <span id="count-inprogress" class="col-count">0</span>
             </div>
-            <div class="kanban-col" data-status="done">
-              <div class="kanban-col-header done-header">
-                <span>DONE</span>
-                <span id="count-done" class="badge badge-done">0</span>
-              </div>
-              <div class="kanban-cards" id="col-done"></div>
+            <div class="kanban-cards" id="col-inprogress"></div>
+          </div>
+          <div class="kanban-col" data-status="done">
+            <div class="kanban-col-header">
+              <div class="col-title"><span class="col-dot dot-done"></span>DONE</div>
+              <span id="count-done" class="col-count">0</span>
             </div>
+            <div class="kanban-cards" id="col-done"></div>
           </div>
         </div>
       </div>
 
-      <!-- Daily Briefing Panel -->
-      <div id="panel-briefing" class="side-panel hidden">
-        <div class="panel-header">
-          <div class="panel-header-left">
-            <svg viewBox="0 0 16 16" width="14" height="14">
-              <polygon points="8,1 14,4.5 14,11.5 8,15 2,11.5 2,4.5" fill="none" stroke="currentColor" stroke-width="1.2"/>
-            </svg>
-            <span>DAILY BRIEFING</span>
+      <!-- Daily Briefing Panel (full-page) -->
+      <div id="panel-briefing" class="full-panel hidden">
+        <div class="full-panel-header">
+          <div class="full-panel-title">
+            <span class="panel-icon">&#9672;</span>
+            <h1>Daily Briefing</h1>
+            <span id="briefing-date-subtitle" class="panel-subtitle"></span>
           </div>
-          <button class="panel-close" data-panel="briefing">
-            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5">
-              <line x1="3" y1="3" x2="13" y2="13"/>
-              <line x1="13" y1="3" x2="3" y2="13"/>
-            </svg>
-          </button>
+          <div class="panel-actions">
+            <button id="refresh-briefing-btn" class="btn-ghost">&#8635; Refresh</button>
+            <button class="panel-close-btn" data-panel="briefing">&#x2715;</button>
+          </div>
         </div>
-        <div class="panel-body" id="briefing-content">
-          <div class="briefing-loading">
-            <div class="briefing-loading-ring"></div>
-            <span>Loading briefing...</span>
+        <div class="briefing-grid" id="briefing-content">
+          <div class="briefing-loading-state">
+            <div class="briefing-spinner"></div>
+            <p>Generating your briefing...</p>
           </div>
         </div>
       </div>
@@ -473,6 +492,19 @@
     </nav>
 
   </div><!-- /app -->
+
+  <!-- Expand Modal -->
+  <div id="expand-modal" class="expand-modal hidden">
+    <div class="expand-modal-backdrop"></div>
+    <div class="expand-modal-content">
+      <div class="expand-modal-header">
+        <h2 id="expand-modal-title">Detail</h2>
+        <button id="expand-modal-close" class="expand-close-btn">&#x2715;</button>
+      </div>
+      <div id="expand-modal-body" class="expand-modal-body">
+      </div>
+    </div>
+  </div>
 
   <!-- Toast Notifications -->
   <div id="toast-container"></div>

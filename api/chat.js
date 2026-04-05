@@ -6,6 +6,17 @@ const Anthropic = require('@anthropic-ai/sdk');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// Fetch with timeout — prevents slow external APIs from eating our budget
+async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Tool definitions for Claude
 const TOOLS = [
   {
@@ -163,7 +174,7 @@ async function fetchWeather(location, units) {
       // Default to London if no geolocation
       lat = 51.5074; lon = -0.1278;
     } else {
-      const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`);
+      const geoRes = await fetchWithTimeout(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`);
       const geoData = await geoRes.json();
       if (geoData.results && geoData.results[0]) {
         lat = geoData.results[0].latitude;
@@ -173,7 +184,7 @@ async function fetchWeather(location, units) {
       }
     }
     const tempUnit = units === 'fahrenheit' ? 'fahrenheit' : 'celsius';
-    const weatherRes = await fetch(
+    const weatherRes = await fetchWithTimeout(
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&temperature_unit=${tempUnit}`
     );
     const data = await weatherRes.json();
@@ -206,7 +217,7 @@ async function fetchNews(query, category, count) {
     } else {
       url = `https://newsapi.org/v2/top-headlines?category=${category || 'general'}&pageSize=${count}&country=us&apiKey=${apiKey}`;
     }
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     const data = await res.json();
     return {
       articles: (data.articles || []).slice(0, count).map(a => ({
@@ -236,7 +247,7 @@ async function fetchMarketData(symbols) {
 
     if (cryptoSymbols.length > 0) {
       const ids = cryptoSymbols.map(s => cryptoMap[s.toUpperCase()]).join(',');
-      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`);
+      const res = await fetchWithTimeout(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`);
       const data = await res.json();
       cryptoSymbols.forEach(s => {
         const id = cryptoMap[s.toUpperCase()];
@@ -251,10 +262,10 @@ async function fetchMarketData(symbols) {
     }
 
     if (stockSymbols.length > 0) {
-      // Yahoo Finance unofficial API
-      for (const sym of stockSymbols) {
+      // Yahoo Finance unofficial API — fetch all symbols in parallel
+      await Promise.all(stockSymbols.map(async (sym) => {
         try {
-          const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=2d`);
+          const res = await fetchWithTimeout(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=2d`, {}, 4000);
           const data = await res.json();
           const result = data?.chart?.result?.[0];
           if (result) {
@@ -267,7 +278,7 @@ async function fetchMarketData(symbols) {
         } catch (_err) {
           // Skip individual symbol failures silently
         }
-      }
+      }));
     }
     return { prices: results };
   } catch (e) {
@@ -278,7 +289,7 @@ async function fetchMarketData(symbols) {
 async function webSearch(query) {
   try {
     // DuckDuckGo instant answers API (free, no key)
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
       { headers: { 'User-Agent': 'JARVIS/2.0' } }
     );
@@ -299,8 +310,10 @@ async function webSearch(query) {
 }
 
 async function getDailyBriefing(location, tasks) {
-  const weather = await fetchWeather(location || 'London', 'celsius');
-  const news = await fetchNews('', 'general', 4);
+  const [weather, news] = await Promise.all([
+    fetchWeather(location || 'London', 'celsius'),
+    fetchNews('', 'general', 4)
+  ]);
   const date = new Date().toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const pendingTasks = tasks?.filter(t => t.status !== 'done') || [];
   return {
@@ -361,23 +374,31 @@ When Liam asks you to do something:
 
     let apiMessages = messages.map(m => ({ role: m.role, content: m.content }));
 
-    // Tool-use loop — max 5 iterations
+    // Tool-use loop — max 3 iterations (balance vs. 30s Vercel timeout)
     let iterations = 0;
     let finalText = '';
     let clientActions = [];
+    const startTime = Date.now();
+    const BUDGET_MS = 25000; // leave 5s headroom before Vercel's 30s kill
 
-    while (iterations < 5) {
+    while (iterations < 3) {
       iterations++;
+
+      // Bail out early if we're running out of time
+      if (Date.now() - startTime > BUDGET_MS) {
+        finalText = finalText || "I'm still gathering information — that request is taking longer than expected. Try asking for less at once (e.g., just the news, or just the weather).";
+        break;
+      }
+
       const response = await client.messages.create({
         model: 'claude-sonnet-4-6',
-        max_tokens: 4096,
+        max_tokens: 2048,
         system: systemPrompt,
         tools: TOOLS,
         messages: apiMessages
       });
 
       if (response.stop_reason === 'end_turn') {
-        // Extract text content
         finalText = response.content
           .filter(b => b.type === 'text')
           .map(b => b.text)
@@ -386,38 +407,38 @@ When Liam asks you to do something:
       }
 
       if (response.stop_reason === 'tool_use') {
-        // Add assistant's response to messages
         apiMessages.push({ role: 'assistant', content: response.content });
 
-        // Execute all tool calls
-        const toolResults = [];
-        for (const block of response.content) {
-          if (block.type !== 'tool_use') continue;
-          const result = await executeTool(block.name, block.input, currentTasks);
-
-          // Check if it's a client-side action
-          if (result.__action) {
-            clientActions.push(result);
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify({ success: true, action: result.__action, data: result })
-            });
-          } else {
-            toolResults.push({
+        // Execute all tool calls in PARALLEL
+        const toolBlocks = response.content.filter(b => b.type === 'tool_use');
+        const toolResults = await Promise.all(
+          toolBlocks.map(async (block) => {
+            const result = await executeTool(block.name, block.input, currentTasks);
+            if (result.__action) {
+              clientActions.push(result);
+              return {
+                type: 'tool_result',
+                tool_use_id: block.id,
+                content: JSON.stringify({ success: true, action: result.__action, data: result })
+              };
+            }
+            return {
               type: 'tool_result',
               tool_use_id: block.id,
               content: JSON.stringify(result)
-            });
-          }
-        }
+            };
+          })
+        );
         apiMessages.push({ role: 'user', content: toolResults });
         continue;
       }
 
-      // Unexpected stop reason — extract any available text
       finalText = response.content.find(b => b.type === 'text')?.text || 'I encountered an issue. Please try again.';
       break;
+    }
+
+    if (!finalText) {
+      finalText = "I ran out of time processing that. Try a more focused request.";
     }
 
     return res.status(200).json({
@@ -429,3 +450,6 @@ When Liam asks you to do something:
     return res.status(500).json({ error: error.message || 'Internal server error' });
   }
 };
+
+// Tell Vercel this route can run up to 60s (Pro) / 30s (Hobby cap)
+module.exports.config = { maxDuration: 30 };

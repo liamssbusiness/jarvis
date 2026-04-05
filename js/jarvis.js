@@ -14,6 +14,7 @@ class JarvisEngine {
     this.setupEventListeners();
     this.loadHistory();
     this.displayWelcome();
+    this.updateTokenCounter();
   }
 
   setupElements() {
@@ -26,6 +27,78 @@ class JarvisEngine {
     this.chatAttachments = document.getElementById('chat-attachments');
     this.arcLabel = document.getElementById('arc-label');
     this.sessionCounter = document.getElementById('w-session');
+    this.tokenCountEl = document.getElementById('token-count');
+    this.chatSearchEl = document.getElementById('chat-search');
+  }
+
+  // Approximate token count: ~4 characters per token
+  estimateTokens(text) {
+    if (!text) return 0;
+    return Math.ceil(String(text).length / 4);
+  }
+
+  updateTokenCounter() {
+    if (!this.tokenCountEl) return;
+    const total = this.messages.reduce(
+      (sum, m) => sum + this.estimateTokens(m.content),
+      0
+    );
+    this.tokenCountEl.textContent = total.toLocaleString();
+  }
+
+  filterMessages(query) {
+    const q = (query || '').trim().toLowerCase();
+    const msgEls = this.chatMessages.querySelectorAll('.msg');
+    msgEls.forEach((el) => {
+      // Clear any previous highlights
+      const textEl = el.querySelector('.msg-text, .msg-bubble');
+      if (!textEl) return;
+      // Restore original text if we stored it
+      if (textEl.dataset.originalHtml) {
+        textEl.innerHTML = textEl.dataset.originalHtml;
+        delete textEl.dataset.originalHtml;
+      }
+      if (!q) {
+        el.classList.remove('msg-search-hidden');
+        return;
+      }
+      const plain = textEl.textContent.toLowerCase();
+      if (plain.includes(q)) {
+        el.classList.remove('msg-search-hidden');
+        // Highlight matches in text nodes only
+        textEl.dataset.originalHtml = textEl.innerHTML;
+        this._highlightInElement(textEl, q);
+      } else {
+        el.classList.add('msg-search-hidden');
+      }
+    });
+  }
+
+  _highlightInElement(root, query) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    const textNodes = [];
+    let node;
+    while ((node = walker.nextNode())) textNodes.push(node);
+    const qLen = query.length;
+    textNodes.forEach((textNode) => {
+      const text = textNode.nodeValue;
+      const lower = text.toLowerCase();
+      let idx = lower.indexOf(query);
+      if (idx === -1) return;
+      const frag = document.createDocumentFragment();
+      let cursor = 0;
+      while (idx !== -1) {
+        if (idx > cursor) frag.appendChild(document.createTextNode(text.slice(cursor, idx)));
+        const mark = document.createElement('span');
+        mark.className = 'search-highlight';
+        mark.textContent = text.slice(idx, idx + qLen);
+        frag.appendChild(mark);
+        cursor = idx + qLen;
+        idx = lower.indexOf(query, cursor);
+      }
+      if (cursor < text.length) frag.appendChild(document.createTextNode(text.slice(cursor)));
+      textNode.parentNode.replaceChild(frag, textNode);
+    });
   }
 
   setupEventListeners() {
@@ -51,6 +124,13 @@ class JarvisEngine {
 
     if (this.imageUpload) {
       this.imageUpload.addEventListener('change', (e) => this.handleFileAttach(e));
+    }
+
+    // Chat search: filter messages by substring
+    if (this.chatSearchEl) {
+      this.chatSearchEl.addEventListener('input', (e) => {
+        this.filterMessages(e.target.value);
+      });
     }
 
     const clearBtn = document.getElementById('clear-chat-btn');
@@ -329,6 +409,7 @@ class JarvisEngine {
         this.sessionCounter.textContent = `${this.messageCount} msgs`;
       }
     }
+    this.updateTokenCounter();
   }
 
   renderMessage(role, content, animate) {
@@ -462,6 +543,8 @@ class JarvisEngine {
       this.sessionCounter.textContent = '0 msgs';
     }
     localStorage.removeItem('jarvis_chat_history');
+    this.updateTokenCounter();
+    if (this.chatSearchEl) this.chatSearchEl.value = '';
     this.displayWelcome();
   }
 
