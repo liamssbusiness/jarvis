@@ -11,6 +11,22 @@ const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 // Liam's Telegram user ID — set after first message
 let AUTHORIZED_USER_ID = null;
 
+// Gemini API key rotation — 3 keys, auto-rotate on quota errors
+const GEMINI_KEYS = [
+  process.env.GEMINI_API_KEY,
+  process.env.GEMINI_API_KEY_2,
+  process.env.GEMINI_API_KEY_3
+].filter(Boolean);
+let geminiKeyIndex = 0;
+function getGeminiKey() {
+  if (GEMINI_KEYS.length === 0) return null;
+  return GEMINI_KEYS[geminiKeyIndex % GEMINI_KEYS.length];
+}
+function rotateGeminiKey() {
+  geminiKeyIndex = (geminiKeyIndex + 1) % GEMINI_KEYS.length;
+  return getGeminiKey();
+}
+
 // Conversation history (per-session, resets on deploy)
 const conversationHistory = [];
 const MAX_HISTORY = 20;
@@ -1101,7 +1117,7 @@ async function executeToolRaw(toolName, toolInput, chatId) {
     }
 
     case 'web_search': {
-      const geminiKey = process.env.GEMINI_API_KEY;
+      let geminiKey = getGeminiKey();
       try {
         // Use Gemini with Google Search grounding for reliable web results
         const gRes = await fetch(
@@ -1758,7 +1774,7 @@ async function sendTelegramMessage(chatId, text, options = {}) {
 
 // Send a voice note to Telegram by synthesizing text with Gemini TTS
 async function sendTelegramVoice(chatId, text) {
-  const geminiKey = process.env.GEMINI_API_KEY;
+  let geminiKey = getGeminiKey();
   if (!geminiKey) return { success: false, error: 'GEMINI_API_KEY not set' };
   if (!text || !text.trim()) return { success: false, error: 'No text provided' };
 
@@ -1848,7 +1864,7 @@ function pcmToWav(pcmData, sampleRate, numChannels, bitsPerSample) {
 
 // Generate an image via Gemini 2.0 Flash Image Generation and send to Telegram
 async function sendTelegramGeneratedImage(chatId, prompt) {
-  const geminiKey = process.env.GEMINI_API_KEY;
+  let geminiKey = getGeminiKey();
   if (!geminiKey) return { success: false, error: 'GEMINI_API_KEY not set' };
 
   try {
@@ -1920,7 +1936,7 @@ async function transcribeVoice(fileId) {
     const audioBase64 = buffer.toString('base64');
 
     // Use Gemini for transcription
-    const geminiKey = process.env.GEMINI_API_KEY;
+    let geminiKey = getGeminiKey();
     if (!geminiKey) return '[Voice message received but no transcription service available]';
 
     const geminiRes = await fetch(

@@ -1,4 +1,8 @@
 // Web search — DuckDuckGo primary + Gemini grounding when quota available
+const GEMINI_KEYS = [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2, process.env.GEMINI_API_KEY_3].filter(Boolean);
+let gKeyIdx = 0;
+function nextGeminiKey() { gKeyIdx = (gKeyIdx + 1) % GEMINI_KEYS.length; return GEMINI_KEYS[gKeyIdx]; }
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -55,7 +59,7 @@ module.exports = async function handler(req, res) {
     }
 
     // 3. Try Gemini grounding if we have quota (non-blocking — if it fails, we already have results)
-    const geminiKey = process.env.GEMINI_API_KEY;
+    let geminiKey = GEMINI_KEYS[gKeyIdx];
     if (geminiKey && results.length < 4) {
       try {
         const gRes = await fetch(
