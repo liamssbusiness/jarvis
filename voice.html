@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#090b10">
+  <title>J.A.R.V.I.S — Voice</title>
+  <link rel="manifest" href="/manifest.json">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;600&family=JetBrains+Mono:wght@300;400&display=swap');
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #090b10;
+      color: #e8f4f8;
+      font-family: 'Space Grotesk', sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    /* Ambient background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse at 50% 40%, rgba(0, 229, 255, 0.06) 0%, transparent 60%),
+        radial-gradient(ellipse at 50% 100%, rgba(0, 71, 255, 0.04) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 24px;
+      width: 100%;
+      max-width: 400px;
+      padding: 20px;
+    }
+
+    /* Status bar */
+    .status-bar {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: rgba(0, 229, 255, 0.5);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    /* Orb */
+    .orb-container {
+      position: relative;
+      width: 200px;
+      height: 200px;
+      cursor: pointer;
+    }
+
+    .orb {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 40% 35%, rgba(255,255,255,0.15) 0%, transparent 40%),
+        radial-gradient(circle at 50% 50%, #00e5ff 0%, #0088cc 30%, #003366 60%, #001133 100%);
+      box-shadow:
+        0 0 40px rgba(0, 229, 255, 0.4),
+        0 0 80px rgba(0, 229, 255, 0.2),
+        0 0 120px rgba(0, 71, 255, 0.15),
+        inset 0 0 30px rgba(0, 229, 255, 0.3),
+        inset 0 0 60px rgba(0, 0, 0, 0.5);
+      animation: breathe 3s ease-in-out infinite;
+      transition: all 0.3s ease;
+    }
+
+    .orb.listening {
+      animation: breathe-fast 1.5s ease-in-out infinite;
+      box-shadow:
+        0 0 60px rgba(0, 229, 255, 0.6),
+        0 0 120px rgba(0, 229, 255, 0.3),
+        0 0 200px rgba(0, 71, 255, 0.2),
+        inset 0 0 40px rgba(0, 229, 255, 0.4);
+    }
+
+    .orb.speaking {
+      animation: pulse-speak 0.8s ease-in-out infinite;
+      box-shadow:
+        0 0 80px rgba(0, 229, 255, 0.7),
+        0 0 150px rgba(0, 229, 255, 0.4),
+        inset 0 0 50px rgba(0, 229, 255, 0.5);
+    }
+
+    .orb.thinking {
+      animation: thinking-spin 2s linear infinite;
+      filter: hue-rotate(30deg);
+    }
+
+    /* Ring around orb */
+    .orb-ring {
+      position: absolute;
+      inset: -15px;
+      border-radius: 50%;
+      border: 1px solid rgba(0, 229, 255, 0.15);
+      animation: spin 12s linear infinite;
+    }
+
+    .orb-ring::after {
+      content: '';
+      position: absolute;
+      top: -3px;
+      left: 50%;
+      width: 6px;
+      height: 6px;
+      background: #00e5ff;
+      border-radius: 50%;
+      box-shadow: 0 0 10px #00e5ff;
+    }
+
+    .orb-ring-2 {
+      position: absolute;
+      inset: -30px;
+      border-radius: 50%;
+      border: 1px solid rgba(0, 229, 255, 0.08);
+      animation: spin 20s linear infinite reverse;
+    }
+
+    /* State label */
+    .state-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      letter-spacing: 0.2em;
+      color: #00e5ff;
+      text-transform: uppercase;
+      min-height: 20px;
+    }
+
+    /* Transcript area */
+    .transcript {
+      width: 100%;
+      min-height: 80px;
+      max-height: 200px;
+      overflow-y: auto;
+      text-align: center;
+      font-size: 16px;
+      line-height: 1.6;
+      color: rgba(232, 244, 248, 0.9);
+      padding: 12px;
+    }
+
+    .transcript .user-text {
+      color: rgba(232, 244, 248, 0.5);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+
+    .transcript .jarvis-text {
+      color: #e8f4f8;
+      font-size: 15px;
+    }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .btn {
+      background: rgba(0, 229, 255, 0.08);
+      border: 1px solid rgba(0, 229, 255, 0.2);
+      color: #00e5ff;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn:hover, .btn:active {
+      background: rgba(0, 229, 255, 0.15);
+      border-color: rgba(0, 229, 255, 0.4);
+    }
+
+    .btn.active {
+      background: rgba(0, 229, 255, 0.2);
+      border-color: #00e5ff;
+      box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
+    }
+
+    .btn-stop {
+      border-color: rgba(255, 68, 68, 0.4);
+      color: #ff4444;
+    }
+
+    /* Waveform */
+    .waveform {
+      display: flex;
+      gap: 3px;
+      align-items: center;
+      height: 30px;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .waveform.active { opacity: 1; }
+
+    .waveform .bar {
+      width: 3px;
+      background: #00e5ff;
+      border-radius: 2px;
+      animation: wave 1s ease-in-out infinite;
+    }
+
+    /* Hint */
+    .hint {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: rgba(122, 155, 181, 0.5);
+      letter-spacing: 0.1em;
+      text-align: center;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(0, 229, 255, 0.2); border-radius: 2px; }
+
+    /* Animations */
+    @keyframes breathe {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.03); }
+    }
+    @keyframes breathe-fast {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.06); }
+    }
+    @keyframes pulse-speak {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.04); }
+    }
+    @keyframes thinking-spin {
+      0% { transform: scale(1); filter: hue-rotate(0deg); }
+      50% { transform: scale(1.02); filter: hue-rotate(30deg); }
+      100% { transform: scale(1); filter: hue-rotate(0deg); }
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    @keyframes wave {
+      0%, 100% { height: 4px; }
+      50% { height: 20px; }
+    }
+
+    /* Keep screen awake hint */
+    .wake-lock { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="status-bar">
+      <span id="status">J.A.R.V.I.S v2.0 — Voice Mode</span>
+    </div>
+
+    <div class="orb-container" id="orb-tap">
+      <div class="orb-ring-2"></div>
+      <div class="orb-ring"></div>
+      <div class="orb" id="orb"></div>
+    </div>
+
+    <div class="state-label" id="state-label">TAP ORB TO START</div>
+
+    <div class="waveform" id="waveform">
+      <div class="bar" style="animation-delay:0s"></div>
+      <div class="bar" style="animation-delay:0.1s"></div>
+      <div class="bar" style="animation-delay:0.2s"></div>
+      <div class="bar" style="animation-delay:0.3s"></div>
+      <div class="bar" style="animation-delay:0.4s"></div>
+      <div class="bar" style="animation-delay:0.3s"></div>
+      <div class="bar" style="animation-delay:0.2s"></div>
+      <div class="bar" style="animation-delay:0.1s"></div>
+      <div class="bar" style="animation-delay:0s"></div>
+    </div>
+
+    <div class="transcript" id="transcript"></div>
+
+    <div class="controls">
+      <button class="btn" id="btn-mode">CONTINUOUS</button>
+      <button class="btn btn-stop" id="btn-stop" style="display:none">STOP</button>
+    </div>
+
+    <div class="hint">Tap the orb or say something • JARVIS listens continuously</div>
+  </div>
+
+  <!-- Keep screen awake -->
+  <video class="wake-lock" id="wake-lock" loop muted playsinline>
+    <source src="data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAA" type="video/mp4">
+  </video>
+
+  <script>
+    const API = '/api/chat';
+    const orb = document.getElementById('orb');
+    const stateLabel = document.getElementById('state-label');
+    const transcript = document.getElementById('transcript');
+    const waveform = document.getElementById('waveform');
+    const btnMode = document.getElementById('btn-mode');
+    const btnStop = document.getElementById('btn-stop');
+    const statusEl = document.getElementById('status');
+
+    let recognition = null;
+    let synthesis = window.speechSynthesis;
+    let isListening = false;
+    let isSpeaking = false;
+    let continuous = true;
+    let messages = [];
+    let preferredVoice = null;
+
+    // Load JARVIS memory for context
+    let memoryContext = '';
+    fetch('/docs/JARVIS_MEMORY.md').then(r => r.text()).then(t => {
+      memoryContext = t.substring(0, 2000);
+    }).catch(() => {});
+
+    // Init speech recognition
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SR) {
+      recognition = new SR();
+      recognition.lang = 'en-GB';
+      recognition.continuous = false;
+      recognition.interimResults = true;
+
+      recognition.onresult = (e) => {
+        const result = Array.from(e.results).map(r => r[0].transcript).join('');
+        const isFinal = e.results[e.results.length - 1].isFinal;
+        showUserText(result);
+        if (isFinal) {
+          stopListening();
+          processCommand(result);
+        }
+      };
+
+      recognition.onerror = (e) => {
+        if (e.error === 'no-speech' && continuous) {
+          // Restart silently
+          setTimeout(startListening, 500);
+          return;
+        }
+        if (e.error !== 'aborted') {
+          stateLabel.textContent = 'TAP ORB TO RESTART';
+          orb.className = 'orb';
+        }
+      };
+
+      recognition.onend = () => {
+        if (isListening) {
+          // Auto-restart in continuous mode
+          if (continuous && !isSpeaking) {
+            setTimeout(startListening, 300);
+          }
+        }
+      };
+    }
+
+    // Load preferred voice
+    function loadVoices() {
+      const voices = synthesis.getVoices();
+      preferredVoice = voices.find(v => v.lang === 'en-GB' && /daniel|oliver|male/i.test(v.name))
+        || voices.find(v => v.lang === 'en-GB')
+        || voices.find(v => v.lang.startsWith('en'))
+        || voices[0];
+    }
+    synthesis.onvoiceschanged = loadVoices;
+    loadVoices();
+
+    // Tap orb to start
+    document.getElementById('orb-tap').addEventListener('click', () => {
+      if (isListening || isSpeaking) {
+        stopAll();
+      } else {
+        startListening();
+      }
+    });
+
+    btnMode.addEventListener('click', () => {
+      continuous = !continuous;
+      btnMode.textContent = continuous ? 'CONTINUOUS' : 'PUSH-TO-TALK';
+      btnMode.classList.toggle('active', continuous);
+    });
+
+    btnStop.addEventListener('click', stopAll);
+
+    function startListening() {
+      if (!recognition) {
+        stateLabel.textContent = 'VOICE NOT SUPPORTED';
+        return;
+      }
+      try {
+        recognition.start();
+        isListening = true;
+        orb.className = 'orb listening';
+        stateLabel.textContent = 'LISTENING';
+        waveform.classList.add('active');
+        btnStop.style.display = '';
+        keepAwake();
+      } catch (e) {
+        // Already started
+      }
+    }
+
+    function stopListening() {
+      try { recognition.stop(); } catch {}
+      isListening = false;
+      waveform.classList.remove('active');
+    }
+
+    function stopAll() {
+      stopListening();
+      synthesis.cancel();
+      isSpeaking = false;
+      orb.className = 'orb';
+      stateLabel.textContent = 'TAP ORB TO START';
+      btnStop.style.display = 'none';
+    }
+
+    function showUserText(text) {
+      const el = transcript.querySelector('.user-text') || document.createElement('div');
+      el.className = 'user-text';
+      el.textContent = text;
+      if (!el.parentElement) {
+        transcript.innerHTML = '';
+        transcript.appendChild(el);
+      }
+    }
+
+    async function processCommand(text) {
+      orb.className = 'orb thinking';
+      stateLabel.textContent = 'PROCESSING';
+
+      messages.push({ role: 'user', content: text });
+      if (messages.length > 10) messages = messages.slice(-10);
+
+      try {
+        const res = await fetch(API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages,
+            currentTasks: [],
+            systemAddendum: `VOICE MODE ACTIVE. Keep responses SHORT and conversational (1-3 sentences max unless asked for detail). You are speaking out loud through a speaker — no markdown, no bullet points, no code blocks. Speak naturally.\n\nJARVIS MEMORY:\n${memoryContext}`
+          })
+        });
+        const data = await res.json();
+        const reply = data.response || 'I didn\'t catch that.';
+
+        messages.push({ role: 'assistant', content: reply });
+
+        // Show and speak
+        transcript.innerHTML = `<div class="user-text">${text}</div><div class="jarvis-text">${reply}</div>`;
+        transcript.scrollTop = transcript.scrollHeight;
+
+        speak(reply);
+      } catch (e) {
+        stateLabel.textContent = 'CONNECTION ERROR';
+        orb.className = 'orb';
+        if (continuous) setTimeout(startListening, 2000);
+      }
+    }
+
+    function speak(text) {
+      const clean = text
+        .replace(/```[\s\S]*?```/g, '')
+        .replace(/[*_#`\[\]>]/g, '')
+        .replace(/\n+/g, '. ')
+        .trim()
+        .substring(0, 500);
+
+      synthesis.cancel();
+      const utt = new SpeechSynthesisUtterance(clean);
+      if (preferredVoice) utt.voice = preferredVoice;
+      utt.rate = 0.95;
+      utt.pitch = 0.85;
+      utt.volume = 1;
+
+      utt.onstart = () => {
+        isSpeaking = true;
+        orb.className = 'orb speaking';
+        stateLabel.textContent = 'SPEAKING';
+      };
+
+      utt.onend = () => {
+        isSpeaking = false;
+        orb.className = 'orb';
+        stateLabel.textContent = 'READY';
+        if (continuous) {
+          setTimeout(startListening, 600);
+        } else {
+          stateLabel.textContent = 'TAP ORB TO TALK';
+        }
+      };
+
+      synthesis.speak(utt);
+    }
+
+    // Keep screen awake (prevents phone sleep)
+    function keepAwake() {
+      if ('wakeLock' in navigator) {
+        navigator.wakeLock.request('screen').catch(() => {});
+      }
+    }
+
+    // Status
+    statusEl.textContent = `J.A.R.V.I.S v2.0 — ${new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'})}`;
+    setInterval(() => {
+      statusEl.textContent = `J.A.R.V.I.S v2.0 — ${new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'})}`;
+    }, 60000);
+  </script>
+</body>
+</html>
