@@ -22,8 +22,8 @@ module.exports = async function handler(req, res) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: `Search the web for: ${q}\n\nReturn the top 5 most relevant results. For each result provide: title, URL, and a 1-2 sentence summary. Format as JSON array: [{title, url, snippet}]` }] }],
-          tools: [{ google_search: {} }],
+          contents: [{ parts: [{ text: `Search the web for: ${q}\n\nReturn the top 5 most relevant results. For each result provide: title, URL, and a 1-2 sentence summary. Format as JSON array: [{"title":"...","url":"...","snippet":"..."}]` }] }],
+          tools: [{ googleSearch: {} }],
           generationConfig: { temperature: 0.1 }
         })
       }
