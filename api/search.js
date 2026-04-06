@@ -1,72 +1,94 @@
-// Vercel serverless function
-// Web search endpoint using Gemini with Google Search grounding
-// Falls back to DuckDuckGo instant answers if grounding fails
-
+// Web search — DuckDuckGo primary + Gemini grounding when quota available
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { q = '' } = req.query;
   if (!q) return res.status(400).json({ error: 'Query required' });
 
-  const geminiKey = process.env.GEMINI_API_KEY;
+  const results = [];
+  let summary = '';
 
   try {
-    // Use Gemini with Google Search grounding for reliable results
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `Search the web for: ${q}\n\nReturn the top 5 most relevant results. For each result provide: title, URL, and a 1-2 sentence summary. Format as JSON array: [{"title":"...","url":"...","snippet":"..."}]` }] }],
-          tools: [{ googleSearch: {} }],
-          generationConfig: { temperature: 0.1 }
-        })
-      }
+    // 1. DuckDuckGo instant answers (always works, no key)
+    const ddgRes = await fetch(
+      `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1`,
+      { headers: { 'User-Agent': 'JARVIS/2.0' } }
     );
-    const data = await response.json();
+    const ddg = await ddgRes.json();
+    if (ddg.AbstractText) {
+      results.push({ title: ddg.Heading, snippet: ddg.AbstractText, url: ddg.AbstractURL, type: 'summary' });
+      summary = ddg.AbstractText;
+    }
+    (ddg.RelatedTopics || []).forEach(t => {
+      if (t.Text && t.FirstURL) {
+        results.push({ title: t.Text.split(' - ')[0]?.substring(0, 80), snippet: t.Text, url: t.FirstURL, type: 'related' });
+      }
+    });
 
-    // Extract grounding metadata (search results)
-    const candidate = data.candidates?.[0];
-    const groundingMeta = candidate?.groundingMetadata;
-    const searchResults = groundingMeta?.searchEntryPoint?.renderedContent
-      || groundingMeta?.groundingChunks?.map(c => ({
-        title: c.web?.title || '',
-        url: c.web?.uri || '',
-        snippet: ''
-      })) || [];
-
-    // Also get the text response as a summary
-    const textResponse = candidate?.content?.parts?.[0]?.text || '';
-
-    // Try to parse JSON from response
-    let parsedResults = searchResults;
-    if (!parsedResults.length) {
+    // 2. DuckDuckGo HTML search for richer results (scrape lite)
+    if (results.length < 3) {
       try {
-        const jsonMatch = textResponse.match(/\[[\s\S]*\]/);
-        if (jsonMatch) parsedResults = JSON.parse(jsonMatch[0]);
+        const htmlRes = await fetch(
+          `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+          { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; JARVIS/2.0)' } }
+        );
+        const html = await htmlRes.text();
+        const linkMatches = html.matchAll(/<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi);
+        const snippetMatches = html.matchAll(/<a[^>]+class="result__snippet"[^>]*>(.*?)<\/a>/gi);
+        const links = [...linkMatches];
+        const snippets = [...snippetMatches];
+        for (let i = 0; i < Math.min(links.length, 5); i++) {
+          const rawUrl = links[i]?.[1] || '';
+          const title = (links[i]?.[2] || '').replace(/<[^>]+>/g, '').trim();
+          const snip = (snippets[i]?.[1] || '').replace(/<[^>]+>/g, '').trim();
+          // DuckDuckGo wraps URLs in redirects — extract actual URL
+          const urlMatch = rawUrl.match(/uddg=([^&]+)/);
+          const url = urlMatch ? decodeURIComponent(urlMatch[1]) : rawUrl;
+          if (title && url) {
+            results.push({ title, snippet: snip, url, type: 'web' });
+          }
+        }
       } catch {}
     }
 
-    // Fallback: DuckDuckGo if Gemini grounding fails
-    if (!parsedResults.length) {
-      const ddgRes = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1`);
-      const ddgData = await ddgRes.json();
-      if (ddgData.AbstractText) parsedResults.push({ title: ddgData.Heading, snippet: ddgData.AbstractText, url: ddgData.AbstractURL });
-      (ddgData.RelatedTopics || []).slice(0, 5).forEach(t => {
-        if (t.Text) parsedResults.push({ title: t.Text.split(' - ')[0], snippet: t.Text, url: t.FirstURL });
-      });
+    // 3. Try Gemini grounding if we have quota (non-blocking — if it fails, we already have results)
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey && results.length < 4) {
+      try {
+        const gRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: q }] }],
+              tools: [{ googleSearch: {} }],
+              generationConfig: { temperature: 0.1, maxOutputTokens: 300 }
+            })
+          }
+        );
+        const gData = await gRes.json();
+        const chunks = gData.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+        chunks.forEach(c => {
+          if (c.web) results.push({ title: c.web.title || '', url: c.web.uri || '', snippet: '', type: 'grounded' });
+        });
+        const gText = gData.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (gText && !summary) summary = gText.substring(0, 400);
+      } catch {}
     }
 
-    res.status(200).json({
-      query: q,
-      results: parsedResults.slice(0, 6),
-      summary: textResponse.substring(0, 500)
+    // Deduplicate by URL
+    const seen = new Set();
+    const unique = results.filter(r => {
+      if (!r.url || seen.has(r.url)) return false;
+      seen.add(r.url);
+      return true;
     });
+
+    res.status(200).json({ query: q, results: unique.slice(0, 8), summary });
   } catch (e) {
     res.status(500).json({ error: e.message, results: [] });
   }
