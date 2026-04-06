@@ -426,6 +426,17 @@ PRIORITY HIERARCHY:
 4. Outsource to other AI agents when possible
 5. Spawn sub-bots for repetitive tasks
 
+AUTONOMOUS BUILD MODE:
+When Liam asks you to BUILD something (dashboard, feature, page, tool, bot):
+1. If he sends a photo/screenshot of what he wants — analyze it closely and replicate the design
+2. If he sends a URL (TikTok, website, etc.) — use web_search to fetch info about it, ask for a screenshot if needed
+3. Create a brief plan (3-5 bullet points max, don't over-explain)
+4. If the task is clear enough (>90% confident), tell Liam "I'll build this now" and proceed WITHOUT waiting for "go" — Liam wants speed
+5. Use execute_code_task to write the code in the cyber-jarvis repo
+6. After building, deploy automatically and send Liam the URL
+7. For MAJOR changes (restructuring, deleting things, changing core logic), still ask for approval first
+8. For ADDITIONS (new pages, new features, new styles), just build and deliver
+
 SKILL SYSTEM:
 You have a persistent skill system. When you solve a complex problem for Liam:
 1. Save it as a skill using create_skill so you can reuse it later
@@ -896,6 +907,17 @@ const TOOLS = [
         name: { type: 'string', description: 'Skill name to delete' }
       },
       required: ['name']
+    }
+  },
+  {
+    name: 'fetch_url',
+    description: 'Fetch a URL and extract its content. Use when Liam shares a link (TikTok, website, article, etc.) and you need to understand what it shows. Returns page title, description, and text content.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL to fetch' }
+      },
+      required: ['url']
     }
   }
 ];
@@ -1657,6 +1679,42 @@ async function executeToolRaw(toolName, toolInput, chatId) {
         return { success: true, deleted: skillName, message: `Skill "${skillName}" deleted.` };
       } catch (e) {
         return { error: `delete_skill failed: ${e.message}` };
+      }
+    }
+
+    case 'fetch_url': {
+      try {
+        const url = toolInput.url;
+        if (!url) return { error: 'URL required' };
+        const response = await fetch(url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; JARVIS/2.0)' },
+          redirect: 'follow'
+        });
+        const html = await response.text();
+        // Extract useful metadata
+        const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
+        const descMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["'](.*?)["']/i)
+          || html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["'](.*?)["']/i);
+        const imageMatch = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["'](.*?)["']/i);
+        // Strip HTML tags for text content
+        const textContent = html
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .substring(0, 3000);
+        return {
+          url,
+          title: titleMatch?.[1] || '',
+          description: descMatch?.[1] || '',
+          image: imageMatch?.[1] || '',
+          content_preview: textContent.substring(0, 1500),
+          content_length: textContent.length,
+          status: response.status
+        };
+      } catch (e) {
+        return { error: `fetch_url failed: ${e.message}` };
       }
     }
 
