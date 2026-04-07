@@ -321,61 +321,26 @@
     const btnStop = document.getElementById('btn-stop');
     const statusEl = document.getElementById('status');
 
-    let recognition = null;
     let synthesis = window.speechSynthesis;
     let isListening = false;
     let isSpeaking = false;
     let continuous = true;
     let messages = [];
     let preferredVoice = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let silenceTimer = null;
+    let audioContext = null;
+    let analyser = null;
+    let micStream = null;
 
     // Load JARVIS memory for context
     let memoryContext = '';
-    fetch('/docs/JARVIS_MEMORY.md').then(r => r.text()).then(t => {
+    fetch('/docs/JARVIS_MEMORY.md').then(r => r.ok ? r.text() : '').then(t => {
       memoryContext = t.substring(0, 2000);
     }).catch(() => {});
 
-    // Init speech recognition
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SR) {
-      recognition = new SR();
-      recognition.lang = 'en-GB';
-      recognition.continuous = false;
-      recognition.interimResults = true;
-
-      recognition.onresult = (e) => {
-        const result = Array.from(e.results).map(r => r[0].transcript).join('');
-        const isFinal = e.results[e.results.length - 1].isFinal;
-        showUserText(result);
-        if (isFinal) {
-          stopListening();
-          processCommand(result);
-        }
-      };
-
-      recognition.onerror = (e) => {
-        if (e.error === 'no-speech' && continuous) {
-          // Restart silently
-          setTimeout(startListening, 500);
-          return;
-        }
-        if (e.error !== 'aborted') {
-          stateLabel.textContent = 'TAP ORB TO RESTART';
-          orb.className = 'orb';
-        }
-      };
-
-      recognition.onend = () => {
-        if (isListening) {
-          // Auto-restart in continuous mode
-          if (continuous && !isSpeaking) {
-            setTimeout(startListening, 300);
-          }
-        }
-      };
-    }
-
-    // Load preferred voice
+    // Load preferred voice for TTS
     function loadVoices() {
       const voices = synthesis.getVoices();
       preferredVoice = voices.find(v => v.lang === 'en-GB' && /daniel|oliver|male/i.test(v.name))
@@ -386,7 +351,7 @@
     synthesis.onvoiceschanged = loadVoices;
     loadVoices();
 
-    // Tap orb to start
+    // Tap orb to start/stop
     document.getElementById('orb-tap').addEventListener('click', () => {
       if (isListening || isSpeaking) {
         stopAll();
@@ -403,47 +368,173 @@
 
     btnStop.addEventListener('click', stopAll);
 
-    function startListening() {
-      if (!recognition) {
-        stateLabel.textContent = 'VOICE NOT SUPPORTED';
-        return;
-      }
+    // === RECORDING via MediaRecorder (works on Safari iOS + all browsers) ===
+
+    async function startListening() {
       try {
-        recognition.start();
+        if (!micStream) {
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+
+        // Detect silence using AudioContext
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioContext.state === 'suspended') await audioContext.resume();
+
+        const source = audioContext.createMediaStreamSource(micStream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+
+        audioChunks = [];
+        // Safari supports audio/mp4, Chrome supports audio/webm
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+          : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4'
+          : 'audio/webm';
+
+        mediaRecorder = new MediaRecorder(micStream, { mimeType });
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = async () => {
+          if (audioChunks.length === 0) return;
+          const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+          if (audioBlob.size < 1000) {
+            // Too short — restart listening
+            if (continuous && !isSpeaking) setTimeout(startListening, 500);
+            return;
+          }
+          await transcribeAndProcess(audioBlob);
+        };
+
+        mediaRecorder.start(250); // collect in 250ms chunks
         isListening = true;
         orb.className = 'orb listening';
         stateLabel.textContent = 'LISTENING';
         waveform.classList.add('active');
         btnStop.style.display = '';
         keepAwake();
+
+        // Silence detection — stop recording after 2s of silence
+        detectSilence();
       } catch (e) {
-        // Already started
+        stateLabel.textContent = 'MIC ACCESS DENIED';
+        orb.className = 'orb';
+        console.error('Mic error:', e);
       }
     }
 
-    function stopListening() {
-      try { recognition.stop(); } catch {}
+    function detectSilence() {
+      if (!analyser || !isListening) return;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      let silentFrames = 0;
+      let hasSpoken = false;
+
+      function check() {
+        if (!isListening) return;
+        analyser.getByteFrequencyData(data);
+        const avg = data.reduce((a, b) => a + b, 0) / data.length;
+
+        if (avg > 15) {
+          hasSpoken = true;
+          silentFrames = 0;
+        } else if (hasSpoken) {
+          silentFrames++;
+        }
+
+        // 2 seconds of silence after speech → stop
+        if (hasSpoken && silentFrames > 40) {
+          stopListening();
+          return;
+        }
+
+        // 8 seconds max recording
+        if (silentFrames > 160 && !hasSpoken) {
+          // No speech at all — restart
+          stopListening(true);
+          return;
+        }
+
+        requestAnimationFrame(check);
+      }
+      check();
+    }
+
+    function stopListening(noProcess = false) {
       isListening = false;
       waveform.classList.remove('active');
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        if (noProcess) {
+          mediaRecorder.ondataavailable = null;
+          mediaRecorder.onstop = () => {
+            if (continuous) setTimeout(startListening, 500);
+          };
+        }
+        mediaRecorder.stop();
+      } else if (noProcess && continuous) {
+        setTimeout(startListening, 500);
+      }
     }
 
     function stopAll() {
-      stopListening();
-      synthesis.cancel();
+      isListening = false;
       isSpeaking = false;
+      waveform.classList.remove('active');
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.ondataavailable = null;
+        mediaRecorder.onstop = null;
+        try { mediaRecorder.stop(); } catch {}
+      }
+      synthesis.cancel();
       orb.className = 'orb';
       stateLabel.textContent = 'TAP ORB TO START';
       btnStop.style.display = 'none';
     }
 
-    function showUserText(text) {
-      const el = transcript.querySelector('.user-text') || document.createElement('div');
-      el.className = 'user-text';
-      el.textContent = text;
-      if (!el.parentElement) {
-        transcript.innerHTML = '';
-        transcript.appendChild(el);
+    // Transcribe audio via Gemini, then send to JARVIS
+    async function transcribeAndProcess(audioBlob) {
+      orb.className = 'orb thinking';
+      stateLabel.textContent = 'TRANSCRIBING';
+      showUserText('...');
+
+      try {
+        // Convert blob to base64
+        const buffer = await audioBlob.arrayBuffer();
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+        const mimeType = audioBlob.type || 'audio/webm';
+
+        // Send to our chat API which will handle transcription
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [...messages, { role: 'user', content: `[Voice message - transcribe and respond to this audio. The audio is base64 encoded ${mimeType}. Treat the transcription as the user's message and respond conversationally.]` }],
+            currentTasks: [],
+            voiceAudio: { base64, mimeType },
+            systemAddendum: `VOICE MODE ACTIVE. Keep responses SHORT and conversational (1-3 sentences max unless asked for detail). You are speaking out loud — no markdown, no bullet points, no code blocks. Speak naturally like a real assistant.\n\nJARVIS MEMORY:\n${memoryContext}`
+          })
+        });
+        const data = await res.json();
+        const reply = data.response || "I didn't catch that. Try again.";
+
+        messages.push({ role: 'user', content: '[voice message]' });
+        messages.push({ role: 'assistant', content: reply });
+        if (messages.length > 10) messages = messages.slice(-10);
+
+        transcript.innerHTML = `<div class="jarvis-text">${reply}</div>`;
+        speak(reply);
+      } catch (e) {
+        stateLabel.textContent = 'ERROR — TAP TO RETRY';
+        orb.className = 'orb';
+        if (continuous) setTimeout(startListening, 2000);
       }
+    }
+
+    function showUserText(text) {
+      transcript.innerHTML = `<div class="user-text">${text}</div>`;
     }
 
     async function processCommand(text) {
@@ -468,8 +559,7 @@
 
         messages.push({ role: 'assistant', content: reply });
 
-        // Show and speak
-        transcript.innerHTML = `<div class="user-text">${text}</div><div class="jarvis-text">${reply}</div>`;
+        transcript.innerHTML = `<div class="jarvis-text">${reply}</div>`;
         transcript.scrollTop = transcript.scrollHeight;
 
         speak(reply);
