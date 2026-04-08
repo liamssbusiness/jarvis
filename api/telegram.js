@@ -2109,16 +2109,10 @@ async function processMessage(text, chatId, imageBase64 = null, options = {}) {
       }
     }
 
-    // All Gemini keys exhausted AND no Claude credits — return helpful message
-    // Check if Claude has credits before trying
-    try {
-      const testRes = await client.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 50, messages: [{ role: 'user', content: 'ping' }] });
-    } catch (claudeErr) {
-      if (String(claudeErr.message).includes('credit balance')) {
-        conversationHistory.push({ role: 'assistant', content: '[credits depleted]' });
-        return `All AI engines are currently at their limits, Liam.\n\n*Gemini:* Daily quota resets in a few hours (free)\n*Claude:* Needs credits at console.anthropic.com\n\nI'll be back at full power when Gemini resets. For action items (build, email, calendar), you'll need Claude credits.\n\nIn the meantime — tell me what you need and I'll queue it up.`;
-      }
-    }
+    // All Gemini keys exhausted — DON'T fall through to Claude for chat
+    // (saves Claude credits for tool-use only)
+    conversationHistory.push({ role: 'assistant', content: '[gemini quota exceeded]' });
+    return `Gemini daily quota reached, Liam. Resets at midnight Pacific.\n\nI can still *do things* for you (email, calendar, tasks, build) — those use Claude. Just chat is paused.\n\nSay "build", "send email", "create task", etc. and I'll handle it.`;
   }
 
   // === CLAUDE PATH (PAID) — tool use, vision, complex tasks ===
