@@ -2018,9 +2018,12 @@ async function processMessage(text, chatId, imageBase64 = null, options = {}) {
 
   if (!needsTools) {
     // === GEMINI PATH (FREE) — conversational chat ===
-    try {
-      const geminiKey = getGeminiKey();
-      if (geminiKey) {
+    // Try all 3 keys before giving up
+    for (let attempt = 0; attempt < GEMINI_KEYS.length; attempt++) {
+      try {
+        let geminiKey = getGeminiKey();
+        if (!geminiKey) break;
+
         const geminiMessages = apiMessages.slice(-6).map(m => ({
           role: m.role === 'assistant' ? 'model' : 'user',
           parts: [{ text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }]
@@ -2045,12 +2048,30 @@ async function processMessage(text, chatId, imageBase64 = null, options = {}) {
           conversationHistory.push({ role: 'assistant', content: reply });
           return reply;
         }
-        // Gemini failed (quota?) — rotate key and fall through to Claude
+
+        // Quota error — try next key
+        if (geminiData.error?.code === 429) {
+          rotateGeminiKey();
+          continue;
+        }
+
+        // Other error — break
+        break;
+      } catch (e) {
         rotateGeminiKey();
+        continue;
       }
-    } catch (e) {
-      rotateGeminiKey();
-      // Fall through to Claude
+    }
+
+    // All Gemini keys exhausted AND no Claude credits — return helpful message
+    // Check if Claude has credits before trying
+    try {
+      const testRes = await client.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 50, messages: [{ role: 'user', content: 'ping' }] });
+    } catch (claudeErr) {
+      if (String(claudeErr.message).includes('credit balance')) {
+        conversationHistory.push({ role: 'assistant', content: '[credits depleted]' });
+        return `All AI engines are currently at their limits, Liam.\n\n*Gemini:* Daily quota resets in a few hours (free)\n*Claude:* Needs credits at console.anthropic.com\n\nI'll be back at full power when Gemini resets. For action items (build, email, calendar), you'll need Claude credits.\n\nIn the meantime — tell me what you need and I'll queue it up.`;
+      }
     }
   }
 
