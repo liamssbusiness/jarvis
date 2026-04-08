@@ -11,11 +11,13 @@ const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 // Liam's Telegram user ID — set after first message
 let AUTHORIZED_USER_ID = null;
 
-// Gemini API key rotation — 3 keys, auto-rotate on quota errors
+// Gemini API key rotation — 13 keys, auto-rotate on quota errors
 const GEMINI_KEYS = [
-  process.env.GEMINI_API_KEY,
-  process.env.GEMINI_API_KEY_2,
-  process.env.GEMINI_API_KEY_3
+  process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2, process.env.GEMINI_API_KEY_3,
+  process.env.GEMINI_API_KEY_4, process.env.GEMINI_API_KEY_5, process.env.GEMINI_API_KEY_6,
+  process.env.GEMINI_API_KEY_7, process.env.GEMINI_API_KEY_8, process.env.GEMINI_API_KEY_9,
+  process.env.GEMINI_API_KEY_10, process.env.GEMINI_API_KEY_11, process.env.GEMINI_API_KEY_12,
+  process.env.GEMINI_API_KEY_13
 ].filter(Boolean);
 let geminiKeyIndex = 0;
 function getGeminiKey() {
@@ -937,6 +939,50 @@ const TOOLS = [
     }
   }
 ];
+
+// Helper: log conversation to Obsidian vault via local agent
+async function logToVault(userMsg, jarvisReply) {
+  try {
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0];
+    const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '-');
+    const timestamp = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+    // Truncate for log (keep it scannable)
+    const userSnippet = (userMsg || '').substring(0, 200);
+    const replySnippet = (jarvisReply || '').substring(0, 500);
+
+    const entry = `\n### ${timestamp}\n**Liam:** ${userSnippet}\n\n**JARVIS:** ${replySnippet}\n\n---\n`;
+
+    // Append to today's JARVIS conversation log
+    const filename = `${dateStr} JARVIS Chat.md`;
+    const header = `---\ndate: ${dateStr}\ntype: jarvis-chat\ntags: [jarvis, telegram, chat]\n---\n\n# JARVIS Chat Log - ${dateStr}\n\n---\n`;
+
+    // Try appending; if file doesn't exist, the agent creates it with just the append content
+    // So we prepend the header on first write by checking if it's a new file
+    const result = await callLocalAgent('vault-log', {
+      folder: 'JARVIS',
+      filename,
+      append: entry
+    });
+
+    // If this is the first entry today, prepend the header
+    if (result.success) {
+      const checkResult = await callLocalAgent('read-file', {
+        path: `Downloads/ObsidianVault/SecondBrain/JARVIS/${filename}`
+      });
+      if (checkResult.content && !checkResult.content.startsWith('---')) {
+        await callLocalAgent('write-file', {
+          path: `Downloads/ObsidianVault/SecondBrain/JARVIS/${filename}`,
+          content: header + checkResult.content
+        });
+      }
+    }
+  } catch (e) {
+    // Non-critical — don't break the bot if vault logging fails
+    console.error('[vault-log] Failed:', e.message);
+  }
+}
 
 // Helper: call local agent HTTP bridge
 async function callLocalAgent(action, body = {}) {
@@ -2330,6 +2376,9 @@ module.exports = async function handler(req, res) {
 
     // Send response
     await sendTelegramMessage(chatId, response);
+
+    // Log conversation to Obsidian vault (fire-and-forget, non-blocking)
+    logToVault(finalText, response).catch(() => {});
 
     return res.status(200).json({ ok: true });
   } catch (error) {

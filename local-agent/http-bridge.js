@@ -277,8 +277,34 @@ const server = http.createServer(async (req, res) => {
         break;
       }
 
+      case 'vault-log': {
+        // Log a conversation/event to the Obsidian vault
+        // body: { folder, filename, content } or { folder, filename, append }
+        const vaultBase = path.join(HOME, 'Downloads', 'ObsidianVault', 'SecondBrain');
+        const folder = (body.folder || 'Inbox').replace(/\.\./g, '');
+        const filename = (body.filename || `note-${Date.now()}.md`).replace(/\.\./g, '');
+        const targetDir = path.join(vaultBase, folder);
+        const targetFile = path.join(targetDir, filename);
+
+        if (!targetFile.startsWith(vaultBase)) {
+          result = { error: 'Path traversal blocked' };
+          break;
+        }
+
+        await fs.mkdir(targetDir, { recursive: true });
+
+        if (body.append) {
+          const existing = await fs.readFile(targetFile, 'utf8').catch(() => '');
+          await fs.writeFile(targetFile, existing + body.append, 'utf8');
+        } else {
+          await fs.writeFile(targetFile, body.content || '', 'utf8');
+        }
+        result = { success: true, path: `${folder}/${filename}` };
+        break;
+      }
+
       default:
-        result = { error: `Unknown action: ${action}`, available: ['ping', 'system-info', 'read-file', 'write-file', 'create-folder', 'delete-file', 'list-dir', 'find-files', 'exec', 'open-app', 'screenshot', 'openclaw-execute', 'openclaw-status', 'openclaw-list', 'openclaw-config'] };
+        result = { error: `Unknown action: ${action}`, available: ['ping', 'system-info', 'read-file', 'write-file', 'create-folder', 'delete-file', 'list-dir', 'find-files', 'exec', 'open-app', 'screenshot', 'vault-log', 'openclaw-execute', 'openclaw-status', 'openclaw-list', 'openclaw-config'] };
     }
 
     res.writeHead(200);
