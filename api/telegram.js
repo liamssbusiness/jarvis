@@ -2009,6 +2009,52 @@ async function processMessage(text, chatId, imageBase64 = null, options = {}) {
     ? SYSTEM_PROMPT + '\n\nVOICE MODE: Liam sent this via voice message. Reply using the `send_voice_reply` tool so he hears your answer as a voice note. Keep it concise and natural-sounding (under 300 characters when possible). After calling send_voice_reply, end your turn with a brief text confirmation.'
     : SYSTEM_PROMPT;
 
+  // === SMART ROUTING: Gemini (free) for chat, Claude (paid) only for tool-heavy tasks ===
+  // Check if this message likely needs tools (actions, building, emails, calendar, PC control)
+  const lastUserMsg = (apiMessages[apiMessages.length - 1]?.content || '').toString().toLowerCase();
+  const needsTools = /\b(build|create|make|send|email|schedule|calendar|delete|open|run|file|folder|task|remind|alert|search|generate|image|screenshot|deploy|commit|code|skill)\b/.test(lastUserMsg)
+    || imageBase64  // Photos need Claude Vision
+    || preferVoiceReply; // Voice replies need tool calls
+
+  if (!needsTools) {
+    // === GEMINI PATH (FREE) — conversational chat ===
+    try {
+      const geminiKey = getGeminiKey();
+      if (geminiKey) {
+        const geminiMessages = apiMessages.slice(-6).map(m => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }]
+        }));
+
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: systemPrompt.substring(0, 4000) }] },
+              contents: geminiMessages,
+              generationConfig: { maxOutputTokens: 1024, temperature: 0.7 }
+            })
+          }
+        );
+        const geminiData = await geminiRes.json();
+
+        if (geminiData.candidates?.[0]?.content?.parts?.[0]?.text) {
+          const reply = geminiData.candidates[0].content.parts[0].text;
+          conversationHistory.push({ role: 'assistant', content: reply });
+          return reply;
+        }
+        // Gemini failed (quota?) — rotate key and fall through to Claude
+        rotateGeminiKey();
+      }
+    } catch (e) {
+      rotateGeminiKey();
+      // Fall through to Claude
+    }
+  }
+
+  // === CLAUDE PATH (PAID) — tool use, vision, complex tasks ===
   while (iterations < 3) {
     iterations++;
 
