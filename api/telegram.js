@@ -2009,15 +2009,15 @@ async function processMessage(text, chatId, imageBase64 = null, options = {}) {
     ? SYSTEM_PROMPT + '\n\nVOICE MODE: Liam sent this via voice message. Reply using the `send_voice_reply` tool so he hears your answer as a voice note. Keep it concise and natural-sounding (under 300 characters when possible). After calling send_voice_reply, end your turn with a brief text confirmation.'
     : SYSTEM_PROMPT;
 
-  while (iterations < 5) {
+  while (iterations < 3) {
     iterations++;
 
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
+      max_tokens: 2048,
       system: systemPrompt,
       tools: TOOLS,
-      messages: apiMessages
+      messages: apiMessages.slice(-6)
     });
 
     if (response.stop_reason === 'end_turn') {
