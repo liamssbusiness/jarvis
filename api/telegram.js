@@ -2267,6 +2267,19 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({ ok: true });
   } catch (error) {
     console.error('Telegram webhook error:', error);
-    return res.status(200).json({ ok: true }); // Always return 200 to Telegram
+    // Tell Liam what went wrong instead of silently failing
+    try {
+      const chatId = req.body?.message?.chat?.id;
+      if (chatId) {
+        let errMsg = `⚠️ *Error:* ${error.message || 'Unknown error'}`;
+        if (String(error.message).includes('credit balance')) {
+          errMsg = `⚠️ *Anthropic API credits depleted.*\n\nGo to console.anthropic.com → Billing → add credits.\n\nI can't think without credits, Liam.`;
+        } else if (String(error.message).includes('rate_limit')) {
+          errMsg = `⚠️ *Rate limited.* Too many requests. Try again in 60 seconds.`;
+        }
+        await sendTelegramMessage(chatId, errMsg);
+      }
+    } catch {}
+    return res.status(200).json({ ok: true });
   }
 };
