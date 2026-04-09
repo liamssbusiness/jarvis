@@ -335,8 +335,43 @@ module.exports = async function handler(req, res) {
   }
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // =========================================================================
+  // SIRI MODE — simple GET/POST with ?q=... returns plain text for iOS Shortcuts
+  // =========================================================================
+  const siriQuery = (req.query && req.query.q) || (req.body && req.body.q);
+  if (siriQuery) {
+    try {
+      const siriPrompt = `You are J.A.R.V.I.S, Liam's AI assistant. You're being asked via Siri on iPhone, so your response will be spoken aloud.
+
+RULES:
+- Keep replies SHORT — under 2 sentences when possible, never more than 4.
+- Use natural spoken language — no markdown, no lists, no code blocks.
+- No emojis (they don't read well aloud).
+- Be direct and useful. Answer the question, don't preamble.`;
+
+      const siriResponse = await client.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 300,
+        system: siriPrompt,
+        messages: [{ role: 'user', content: String(siriQuery).trim() }]
+      });
+
+      const siriText = siriResponse.content
+        .filter(b => b.type === 'text')
+        .map(b => b.text)
+        .join('')
+        .trim() || 'I got your message but had nothing to say.';
+
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      return res.status(200).send(siriText);
+    } catch (e) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      return res.status(500).send(`Error: ${e.message}`);
+    }
+  }
 
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 

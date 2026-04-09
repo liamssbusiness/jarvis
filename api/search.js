@@ -1,5 +1,5 @@
 // Web search — DuckDuckGo primary + Gemini grounding when quota available
-const GEMINI_KEYS = [process.env.GEMINI_API_KEY,process.env.GEMINI_API_KEY_2,process.env.GEMINI_API_KEY_3,process.env.GEMINI_API_KEY_4,process.env.GEMINI_API_KEY_5,process.env.GEMINI_API_KEY_6,process.env.GEMINI_API_KEY_7,process.env.GEMINI_API_KEY_8,process.env.GEMINI_API_KEY_9,process.env.GEMINI_API_KEY_10,process.env.GEMINI_API_KEY_11,process.env.GEMINI_API_KEY_12,process.env.GEMINI_API_KEY_13].filter(Boolean);
+const GEMINI_KEYS = [process.env.GEMINI_API_KEY].filter(Boolean);
 let gKeyIdx = 0;
 function nextGeminiKey() { gKeyIdx = (gKeyIdx + 1) % GEMINI_KEYS.length; return GEMINI_KEYS[gKeyIdx]; }
 
@@ -63,7 +63,7 @@ module.exports = async function handler(req, res) {
     if (geminiKey && results.length < 4) {
       try {
         const gRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

@@ -22,7 +22,14 @@ const seenApprovalTokens = new Map(); // token -> firstSeenTs (prevents replay)
 const APPROVAL_TOKEN_TTL_MS = 30 * 60 * 1000;
 
 // Simple auth token — must match VERCEL env var LOCAL_AGENT_SECRET
-const SECRET = process.env.LOCAL_AGENT_SECRET || 'jarvis-local-' + Date.now();
+// Refuse to start if unset (prevents predictable-default attack)
+const SECRET = process.env.LOCAL_AGENT_SECRET;
+if (!SECRET) {
+  console.error('\n[FATAL] LOCAL_AGENT_SECRET environment variable is required.');
+  console.error('Set it before starting: $env:LOCAL_AGENT_SECRET="your-random-string"');
+  console.error('Then match the same value in Vercel env for cyber-jarvis.\n');
+  process.exit(1);
+}
 
 function isSafePath(p) {
   const r = path.resolve(p);
@@ -42,11 +49,27 @@ function parseBody(req) {
   });
 }
 
+// Allowed origins — block wildcard CORS
+const ALLOWED_ORIGINS = [
+  'https://cyber-jarvis.vercel.app',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000'
+];
+const ALLOWED_VERCEL_PREVIEW = /^https:\/\/cyber-jarvis-[a-z0-9-]+-liamssbusiness-projects\.vercel\.app$/;
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  // Origin-based CORS (not wildcard)
+  const origin = req.headers.origin;
+  if (origin && (ALLOWED_ORIGINS.includes(origin) || ALLOWED_VERCEL_PREVIEW.test(origin))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else if (!origin) {
+    // Server-to-server (no origin header) — allow, Bearer token still gates it
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Vary', 'Origin');
 
   if (req.method === 'OPTIONS') { res.writeHead(200); return res.end(); }
 
@@ -279,7 +302,8 @@ const server = http.createServer(async (req, res) => {
 
       case 'vault-log': {
         // Log a conversation/event to the Obsidian vault
-        // body: { folder, filename, content } or { folder, filename, append }
+        // body: { folder, filename, content } or { folder, filename, append, header }
+        // If 'append' is provided and file is new, 'header' is prepended automatically
         const vaultBase = path.join(HOME, 'Downloads', 'ObsidianVault', 'SecondBrain');
         const folder = (body.folder || 'Inbox').replace(/\.\./g, '');
         const filename = (body.filename || `note-${Date.now()}.md`).replace(/\.\./g, '');
@@ -287,19 +311,33 @@ const server = http.createServer(async (req, res) => {
         const targetFile = path.join(targetDir, filename);
 
         if (!targetFile.startsWith(vaultBase)) {
-          result = { error: 'Path traversal blocked' };
+          console.error('[vault-log] path traversal blocked:', targetFile);
+          result = { success: false, error: 'Path traversal blocked' };
           break;
         }
 
-        await fs.mkdir(targetDir, { recursive: true });
+        try {
+          await fs.mkdir(targetDir, { recursive: true });
 
-        if (body.append) {
-          const existing = await fs.readFile(targetFile, 'utf8').catch(() => '');
-          await fs.writeFile(targetFile, existing + body.append, 'utf8');
-        } else {
-          await fs.writeFile(targetFile, body.content || '', 'utf8');
+          if (body.append) {
+            // Check if file exists; if not, start with header
+            let existing = '';
+            try {
+              existing = await fs.readFile(targetFile, 'utf8');
+            } catch {
+              // File doesn't exist — use header as starting content
+              existing = body.header || '';
+            }
+            await fs.writeFile(targetFile, existing + body.append, 'utf8');
+          } else {
+            await fs.writeFile(targetFile, body.content || '', 'utf8');
+          }
+          console.log(`[vault-log] wrote ${folder}/${filename} (${body.append ? 'append' : 'overwrite'})`);
+          result = { success: true, path: `${folder}/${filename}` };
+        } catch (e) {
+          console.error(`[vault-log] failed to write ${folder}/${filename}:`, e.message);
+          result = { success: false, error: e.message };
         }
-        result = { success: true, path: `${folder}/${filename}` };
         break;
       }
 

@@ -8,17 +8,14 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
-// Liam's Telegram user ID — set after first message
-let AUTHORIZED_USER_ID = null;
+// Liam's Telegram user ID — hardcoded via env var (no first-message race condition)
+// Set LIAM_TELEGRAM_USER_ID in Vercel env to Liam's numeric Telegram user ID.
+// Fallback: 5869226343 (Liam's known chat ID — same as user ID for private chats)
+const AUTHORIZED_USER_ID = parseInt(process.env.LIAM_TELEGRAM_USER_ID || '5869226343', 10);
 
-// Gemini API key rotation — 13 keys, auto-rotate on quota errors
-const GEMINI_KEYS = [
-  process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2, process.env.GEMINI_API_KEY_3,
-  process.env.GEMINI_API_KEY_4, process.env.GEMINI_API_KEY_5, process.env.GEMINI_API_KEY_6,
-  process.env.GEMINI_API_KEY_7, process.env.GEMINI_API_KEY_8, process.env.GEMINI_API_KEY_9,
-  process.env.GEMINI_API_KEY_10, process.env.GEMINI_API_KEY_11, process.env.GEMINI_API_KEY_12,
-  process.env.GEMINI_API_KEY_13
-].filter(Boolean);
+// Gemini — single paid key (pay-as-you-go), no rotation needed
+const GEMINI_KEYS = [process.env.GEMINI_API_KEY].filter(Boolean);
+const GEMINI_MODEL = 'gemini-2.5-flash';
 let geminiKeyIndex = 0;
 function getGeminiKey() {
   if (GEMINI_KEYS.length === 0) return null;
@@ -941,46 +938,35 @@ const TOOLS = [
 ];
 
 // Helper: log conversation to Obsidian vault via local agent
+// Non-blocking, fire-and-forget. Errors are logged but don't break the bot.
 async function logToVault(userMsg, jarvisReply) {
   try {
     const now = new Date();
     const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '-');
     const timestamp = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-    // Truncate for log (keep it scannable)
-    const userSnippet = (userMsg || '').substring(0, 200);
-    const replySnippet = (jarvisReply || '').substring(0, 500);
+    // Truncate snippets so logs stay scannable
+    const userSnippet = (userMsg || '').substring(0, 500);
+    const replySnippet = (jarvisReply || '').substring(0, 1500);
 
     const entry = `\n### ${timestamp}\n**Liam:** ${userSnippet}\n\n**JARVIS:** ${replySnippet}\n\n---\n`;
-
-    // Append to today's JARVIS conversation log
     const filename = `${dateStr} JARVIS Chat.md`;
     const header = `---\ndate: ${dateStr}\ntype: jarvis-chat\ntags: [jarvis, telegram, chat]\n---\n\n# JARVIS Chat Log - ${dateStr}\n\n---\n`;
 
-    // Try appending; if file doesn't exist, the agent creates it with just the append content
-    // So we prepend the header on first write by checking if it's a new file
+    // Atomic single-call: local agent handles first-write header automatically
     const result = await callLocalAgent('vault-log', {
       folder: 'JARVIS',
       filename,
-      append: entry
+      append: entry,
+      header
     });
 
-    // If this is the first entry today, prepend the header
-    if (result.success) {
-      const checkResult = await callLocalAgent('read-file', {
-        path: `Downloads/ObsidianVault/SecondBrain/JARVIS/${filename}`
-      });
-      if (checkResult.content && !checkResult.content.startsWith('---')) {
-        await callLocalAgent('write-file', {
-          path: `Downloads/ObsidianVault/SecondBrain/JARVIS/${filename}`,
-          content: header + checkResult.content
-        });
-      }
+    if (!result || !result.success) {
+      console.error('[vault-log] write failed:', result?.error || 'unknown', '| agent reachable:', !!process.env.LOCAL_AGENT_URL);
     }
   } catch (e) {
     // Non-critical — don't break the bot if vault logging fails
-    console.error('[vault-log] Failed:', e.message);
+    console.error('[vault-log] exception:', e.message);
   }
 }
 
@@ -1167,7 +1153,7 @@ async function executeToolRaw(toolName, toolInput, chatId) {
       try {
         // Use Gemini with Google Search grounding for reliable web results
         const gRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1986,7 +1972,7 @@ async function transcribeVoice(fileId) {
     if (!geminiKey) return '[Voice message received but no transcription service available]';
 
     const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2076,7 +2062,7 @@ async function processMessage(text, chatId, imageBase64 = null, options = {}) {
         }));
 
         const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2186,10 +2172,9 @@ module.exports = async function handler(req, res) {
     const text = message.text || message.caption || '';
     console.log(`[JARVIS] chat_id=${chatId} user_id=${userId} text="${(text||'').substring(0,60)}"`);
 
-    // Authorization: first message sets the authorized user
-    if (!AUTHORIZED_USER_ID) {
-      AUTHORIZED_USER_ID = userId;
-    } else if (userId !== AUTHORIZED_USER_ID) {
+    // Authorization: only Liam's hardcoded user ID is allowed (no race condition)
+    if (userId !== AUTHORIZED_USER_ID) {
+      console.warn(`[auth] unauthorized access attempt: user_id=${userId}, chat_id=${chatId}, text="${(text||'').substring(0,40)}"`);
       await sendTelegramMessage(chatId, '⛔ Unauthorized. JARVIS serves Liam exclusively.');
       return res.status(200).json({ ok: true });
     }
@@ -2197,6 +2182,57 @@ module.exports = async function handler(req, res) {
     // Handle /chatid command — debug tool
     if (text === '/chatid' || text.toLowerCase() === 'chatid') {
       await sendTelegramMessage(chatId, `Chat ID: \`${chatId}\``);
+      return res.status(200).json({ ok: true });
+    }
+
+    // Handle /note command — quick-capture to Obsidian vault Inbox
+    // Usage: /note Check out claude-flow for agent orchestration
+    if (text.startsWith('/note ') || text.startsWith('/n ')) {
+      const noteBody = text.replace(/^\/(note|n)\s+/, '').trim();
+      if (!noteBody) {
+        await sendTelegramMessage(chatId, '📝 Usage: `/note your thought here` — saves to vault Inbox');
+        return res.status(200).json({ ok: true });
+      }
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0];
+      const timeStr = now.toTimeString().split(' ')[0];
+      const filename = `${dateStr} ${timeStr.replace(/:/g,'-')} quick note.md`;
+      const content = `---\ndate: ${dateStr}\ntime: ${timeStr}\ntype: quick-capture\nsource: telegram\ntags: [inbox, quick-capture]\n---\n\n# Quick Note\n\n${noteBody}\n\n---\n*Captured via Telegram at ${timeStr}. Process during [[Templates/Weekly Review|Weekly Review]].*\n`;
+      const result = await callLocalAgent('vault-log', {
+        folder: 'Inbox',
+        filename,
+        content
+      });
+      if (result && result.success) {
+        await sendTelegramMessage(chatId, `✅ Saved to vault Inbox\n\`${filename}\``);
+      } else {
+        await sendTelegramMessage(chatId, `⚠️ Save failed: ${result?.error || 'local agent unreachable'}`);
+      }
+      return res.status(200).json({ ok: true });
+    }
+
+    // Handle /idea command — quick-capture to Ideas folder
+    if (text.startsWith('/idea ') || text.startsWith('/i ')) {
+      const ideaBody = text.replace(/^\/(idea|i)\s+/, '').trim();
+      if (!ideaBody) {
+        await sendTelegramMessage(chatId, '💡 Usage: `/idea your idea here` — saves to Ideas folder');
+        return res.status(200).json({ ok: true });
+      }
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0];
+      const title = ideaBody.substring(0, 50).replace(/[^\w\s-]/g, '').trim() || 'Untitled';
+      const filename = `${dateStr} ${title}.md`;
+      const content = `---\ndate: ${dateStr}\ntype: idea\nstatus: raw\ntags: [idea, telegram-capture]\n---\n\n# ${title}\n\n## The Idea\n${ideaBody}\n\n## Next Step\n- [ ] *Define the first action*\n\n## Related\n- *Captured via Telegram on ${dateStr}*\n`;
+      const result = await callLocalAgent('vault-log', {
+        folder: 'Ideas',
+        filename,
+        content
+      });
+      if (result && result.success) {
+        await sendTelegramMessage(chatId, `💡 Idea captured\n\`${filename}\``);
+      } else {
+        await sendTelegramMessage(chatId, `⚠️ Save failed: ${result?.error || 'local agent unreachable'}`);
+      }
       return res.status(200).json({ ok: true });
     }
 
