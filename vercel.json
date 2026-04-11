@@ -15,7 +15,7 @@
     {
       "source": "/api/(.*)",
       "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Origin", "value": "https://cyber-jarvis.vercel.app" },
         { "key": "Access-Control-Allow-Methods", "value": "GET,POST,OPTIONS" },
         { "key": "Access-Control-Allow-Headers", "value": "Content-Type" }
       ]
@@ -27,7 +27,7 @@
     }
   },
   "crons": [
-    { "path": "/api/cron-alerts", "schedule": "0 12 * * *" },
-    { "path": "/api/cron-alerts", "schedule": "0 22 * * *" }
+    { "path": "/api/cron-alerts", "schedule": "0 15 * * *" },
+    { "path": "/api/cron-alerts", "schedule": "0 4 * * *" }
   ]
 }

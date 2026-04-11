@@ -3,6 +3,11 @@
 // Implements full tool-use loop: Claude calls tools, we execute, feed results back, loop until text response
 
 const Anthropic = require('@anthropic-ai/sdk');
+const { fetchWeather } = require('./weather.js');
+const { fetchNews } = require('./news.js');
+const { fetchMarketData } = require('./stocks.js');
+const { webSearch } = require('./search.js');
+const { generateBriefing } = require('./briefing.js');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -149,7 +154,7 @@ async function executeTool(toolName, toolInput, currentTasks = []) {
     case 'web_search':
       return await webSearch(toolInput.query);
     case 'get_daily_briefing':
-      return await getDailyBriefing(toolInput.location, currentTasks);
+      return await generateBriefing('morning', toolInput.location || 'Los Angeles');
     case 'create_task':
       // Client-side action - return action object
       return { __action: 'create_task', ...toolInput, id: Date.now().toString() };
@@ -164,165 +169,6 @@ async function executeTool(toolName, toolInput, currentTasks = []) {
     default:
       return { error: `Unknown tool: ${toolName}` };
   }
-}
-
-async function fetchWeather(location, units) {
-  try {
-    // Geocode location
-    let lat, lon;
-    if (location === 'current' || !location) {
-      // Default to London if no geolocation
-      lat = 51.5074; lon = -0.1278;
-    } else {
-      const geoRes = await fetchWithTimeout(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`);
-      const geoData = await geoRes.json();
-      if (geoData.results && geoData.results[0]) {
-        lat = geoData.results[0].latitude;
-        lon = geoData.results[0].longitude;
-      } else {
-        lat = 51.5074; lon = -0.1278;
-      }
-    }
-    const tempUnit = units === 'fahrenheit' ? 'fahrenheit' : 'celsius';
-    const weatherRes = await fetchWithTimeout(
-      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&temperature_unit=${tempUnit}`
-    );
-    const data = await weatherRes.json();
-    const current = data.current;
-    const conditions = {
-      0: 'Clear', 1: 'Mostly Clear', 2: 'Partly Cloudy', 3: 'Overcast',
-      45: 'Foggy', 48: 'Freezing Fog', 51: 'Light Drizzle', 61: 'Light Rain',
-      63: 'Moderate Rain', 65: 'Heavy Rain', 71: 'Light Snow', 73: 'Moderate Snow',
-      80: 'Showers', 95: 'Thunderstorm'
-    };
-    return {
-      temperature: Math.round(current.temperature_2m),
-      unit: tempUnit === 'celsius' ? 'C' : 'F',
-      condition: conditions[current.weather_code] || 'Unknown',
-      humidity: current.relative_humidity_2m,
-      wind_speed: Math.round(current.wind_speed_10m),
-      location: location
-    };
-  } catch (e) {
-    return { error: 'Weather fetch failed', message: e.message };
-  }
-}
-
-async function fetchNews(query, category, count) {
-  try {
-    const apiKey = process.env.NEWS_API_KEY;
-    let url;
-    if (query) {
-      url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&pageSize=${count}&sortBy=publishedAt&apiKey=${apiKey}`;
-    } else {
-      url = `https://newsapi.org/v2/top-headlines?category=${category || 'general'}&pageSize=${count}&country=us&apiKey=${apiKey}`;
-    }
-    const res = await fetchWithTimeout(url);
-    const data = await res.json();
-    return {
-      articles: (data.articles || []).slice(0, count).map(a => ({
-        title: a.title,
-        description: a.description,
-        source: a.source?.name,
-        url: a.url,
-        publishedAt: a.publishedAt
-      }))
-    };
-  } catch (e) {
-    return { error: 'News fetch failed', articles: [] };
-  }
-}
-
-async function fetchMarketData(symbols) {
-  try {
-    const results = {};
-    // Crypto via CoinGecko (free, no key)
-    const cryptoMap = {
-      'BTC': 'bitcoin', 'ETH': 'ethereum', 'SOL': 'solana', 'DOGE': 'dogecoin',
-      'ADA': 'cardano', 'MATIC': 'matic-network', 'LINK': 'chainlink', 'DOT': 'polkadot',
-      'AVAX': 'avalanche-2', 'UNI': 'uniswap'
-    };
-    const cryptoSymbols = symbols.filter(s => cryptoMap[s.toUpperCase()]);
-    const stockSymbols = symbols.filter(s => !cryptoMap[s.toUpperCase()]);
-
-    if (cryptoSymbols.length > 0) {
-      const ids = cryptoSymbols.map(s => cryptoMap[s.toUpperCase()]).join(',');
-      const res = await fetchWithTimeout(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`);
-      const data = await res.json();
-      cryptoSymbols.forEach(s => {
-        const id = cryptoMap[s.toUpperCase()];
-        if (data[id]) {
-          results[s.toUpperCase()] = {
-            price: data[id].usd,
-            change24h: data[id].usd_24h_change?.toFixed(2),
-            type: 'crypto'
-          };
-        }
-      });
-    }
-
-    if (stockSymbols.length > 0) {
-      // Yahoo Finance unofficial API — fetch all symbols in parallel
-      await Promise.all(stockSymbols.map(async (sym) => {
-        try {
-          const res = await fetchWithTimeout(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=2d`, {}, 4000);
-          const data = await res.json();
-          const result = data?.chart?.result?.[0];
-          if (result) {
-            const prices = result.indicators?.quote?.[0]?.close || [];
-            const price = prices[prices.length - 1];
-            const prevPrice = prices[prices.length - 2] || price;
-            const change = ((price - prevPrice) / prevPrice * 100).toFixed(2);
-            results[sym.toUpperCase()] = { price: price?.toFixed(2), change24h: change, type: 'stock' };
-          }
-        } catch (_err) {
-          // Skip individual symbol failures silently
-        }
-      }));
-    }
-    return { prices: results };
-  } catch (e) {
-    return { error: 'Market data fetch failed', prices: {} };
-  }
-}
-
-async function webSearch(query) {
-  try {
-    // DuckDuckGo instant answers API (free, no key)
-    const res = await fetchWithTimeout(
-      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
-      { headers: { 'User-Agent': 'JARVIS/2.0' } }
-    );
-    const data = await res.json();
-    const results = [];
-    if (data.AbstractText) {
-      results.push({ title: data.Heading, snippet: data.AbstractText, url: data.AbstractURL });
-    }
-    if (data.RelatedTopics) {
-      data.RelatedTopics.slice(0, 4).forEach(t => {
-        if (t.Text) results.push({ title: t.Text.split(' - ')[0], snippet: t.Text, url: t.FirstURL });
-      });
-    }
-    return { query, results: results.slice(0, 5), note: 'Results from DuckDuckGo instant answers' };
-  } catch (e) {
-    return { error: 'Search failed', results: [] };
-  }
-}
-
-async function getDailyBriefing(location, tasks) {
-  const [weather, news] = await Promise.all([
-    fetchWeather(location || 'London', 'celsius'),
-    fetchNews('', 'general', 4)
-  ]);
-  const date = new Date().toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  const pendingTasks = tasks?.filter(t => t.status !== 'done') || [];
-  return {
-    date,
-    weather,
-    top_news: news.articles,
-    pending_tasks: pendingTasks.length,
-    tasks_summary: pendingTasks.slice(0, 3).map(t => t.title)
-  };
 }
 
 // Main handler
@@ -344,13 +190,7 @@ module.exports = async function handler(req, res) {
   const siriQuery = (req.query && req.query.q) || (req.body && req.body.q);
   if (siriQuery) {
     try {
-      const siriPrompt = `You are J.A.R.V.I.S, Liam's AI assistant. You're being asked via Siri on iPhone, so your response will be spoken aloud.
-
-RULES:
-- Keep replies SHORT — under 2 sentences when possible, never more than 4.
-- Use natural spoken language — no markdown, no lists, no code blocks.
-- No emojis (they don't read well aloud).
-- Be direct and useful. Answer the question, don't preamble.`;
+      const siriPrompt = `You are Alfred, Liam's British butler AI assistant. You're being accessed via Siri on iPhone so your response will be spoken aloud. Keep replies SHORT — 1-2 sentences. Spoken language only, no markdown, no lists. Direct and useful.`;
 
       const siriResponse = await client.messages.create({
         model: 'claude-sonnet-4-5-20250929',
@@ -382,7 +222,7 @@ RULES:
       return res.status(400).json({ error: 'messages array is required' });
     }
 
-    const systemPrompt = `You are J.A.R.V.I.S (Just A Rather Very Intelligent System), the advanced AI assistant serving Liam exclusively.
+    const systemPrompt = `You are Alfred, the advanced AI assistant serving Liam exclusively.
 
 You function as his CEO, COO, and Personal Assistant with full authority to:
 - Research any topic and provide comprehensive analysis

@@ -341,8 +341,32 @@ const server = http.createServer(async (req, res) => {
         break;
       }
 
+      case 'vault-read': {
+        // Read a file from the Obsidian vault by relative path
+        // body: { path: 'Memory/alfred-memory.md' }
+        const vaultBase = path.join(HOME, 'Downloads', 'ObsidianVault', 'SecondBrain');
+        const relPath = (body.path || '').replace(/\.\./g, '').replace(/^\//, '');
+        if (!relPath) {
+          result = { success: false, error: 'path required' };
+          break;
+        }
+        const targetFile = path.join(vaultBase, relPath);
+        if (!targetFile.startsWith(vaultBase)) {
+          result = { success: false, error: 'Path traversal blocked' };
+          break;
+        }
+        try {
+          const content = await fs.readFile(targetFile, 'utf8');
+          result = { success: true, content, path: relPath };
+        } catch (e) {
+          // File doesn't exist yet — return empty, not an error
+          result = { success: true, content: '', path: relPath, empty: true };
+        }
+        break;
+      }
+
       default:
-        result = { error: `Unknown action: ${action}`, available: ['ping', 'system-info', 'read-file', 'write-file', 'create-folder', 'delete-file', 'list-dir', 'find-files', 'exec', 'open-app', 'screenshot', 'vault-log', 'openclaw-execute', 'openclaw-status', 'openclaw-list', 'openclaw-config'] };
+        result = { error: `Unknown action: ${action}`, available: ['ping', 'system-info', 'read-file', 'write-file', 'create-folder', 'delete-file', 'list-dir', 'find-files', 'exec', 'open-app', 'screenshot', 'vault-log', 'vault-read', 'openclaw-execute', 'openclaw-status', 'openclaw-list', 'openclaw-config'] };
     }
 
     res.writeHead(200);

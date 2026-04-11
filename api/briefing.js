@@ -1,106 +1,171 @@
-// Vercel serverless function
-// Standalone daily briefing endpoint — combines weather + news + time
-// Requires NEWS_API_KEY environment variable
+// api/briefing.js — Alfred's morning and evening brief generator
+'use strict';
 
-module.exports = async function handler(req, res) {
+const { fetchWeather } = require('./weather.js');
+const { fetchNews } = require('./news.js');
+const { fetchMarketData } = require('./stocks.js');
+const { getUnreadSummary } = require('./gmail.js');
+const { getUpcomingEvents } = require('./calendar.js');
+
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/**
+ * Generates Alfred's morning or evening briefing by fetching all data sources
+ * in parallel. Uses Promise.allSettled so a single failing source never breaks
+ * the full brief.
+ *
+ * @param {'morning'|'evening'} type  - Which brief to generate
+ * @param {string}              location - City name for weather lookup
+ * @returns {{ briefingText: string, components: object }}
+ */
+async function generateBriefing(type = 'morning', location = 'Los Angeles') {
+  const isMorning = type !== 'evening';
+  const dayOfWeek = DAYS[new Date().getDay()];
+
+  // Fetch all sources concurrently — failures are isolated
+  const [weatherResult, newsResult, calendarResult, emailResult, marketsResult] =
+    await Promise.allSettled([
+      fetchWeather(location, 'fahrenheit'),
+      fetchNews('', 'general', 4),
+      getUpcomingEvents(isMorning ? 16 : 8),
+      getUnreadSummary(3),
+      fetchMarketData(['BTC', 'ETH', 'NVDA', 'AAPL']),
+    ]);
+
+  // Safely unwrap each settled result
+  const weather   = weatherResult.status   === 'fulfilled' ? weatherResult.value   : null;
+  const newsItems = newsResult.status      === 'fulfilled' ? newsResult.value       : null;
+  const calendar  = calendarResult.status  === 'fulfilled' ? calendarResult.value   : null;
+  const email     = emailResult.status     === 'fulfilled' ? emailResult.value      : null;
+  const markets   = marketsResult.status   === 'fulfilled' ? marketsResult.value    : null;
+
+  const lines = [];
+
+  // Opening salutation
+  if (isMorning) {
+    lines.push(`Good morning, sir. Here is your brief for ${dayOfWeek}.`);
+  } else {
+    lines.push(`Good evening, sir. Here is a recap of the day.`);
+  }
+
+  // Weather line
+  if (weather && weather.temp != null && weather.condition) {
+    lines.push(
+      `It is currently ${Math.round(weather.temp)}°F and ${weather.condition} in ${location}.`
+    );
+  }
+
+  // Calendar line
+  const eventsStr = typeof calendar === 'string'
+    ? calendar.trim()
+    : Array.isArray(calendar)
+      ? calendar.slice(0, 3).join('; ')
+      : null;
+
+  if (eventsStr) {
+    lines.push(`Your schedule: ${eventsStr}`);
+  }
+
+  // Email line
+  const unreadCount = email && email.count != null ? email.count : null;
+  const subjects    = email && email.subjects
+    ? (Array.isArray(email.subjects) ? email.subjects.join(', ') : email.subjects)
+    : null;
+
+  if (unreadCount > 0) {
+    if (subjects) {
+      lines.push(`You have ${unreadCount} unread message${unreadCount !== 1 ? 's' : ''}, including: ${subjects}`);
+    } else {
+      lines.push(`You have ${unreadCount} unread message${unreadCount !== 1 ? 's' : ''}.`);
+    }
+  }
+
+  // Top 2 news headlines (title only, no URLs)
+  if (Array.isArray(newsItems) && newsItems.length > 0) {
+    const top2 = newsItems
+      .slice(0, 2)
+      .map(item => (item.title || item.headline || '').replace(/ - [^-]+$/, '').trim())
+      .filter(Boolean);
+
+    if (top2.length > 0) {
+      lines.push(`In the news: ${top2.join(' Also, ')}`);
+    }
+  }
+
+  // Market prices — BTC first, then first available stock
+  if (markets && typeof markets === 'object') {
+    const btc = markets['BTC'];
+    const stock = markets['NVDA'] || markets['AAPL'] || markets['ETH'];
+
+    const mParts = [];
+    if (btc != null) {
+      mParts.push(`Bitcoin is at $${Number(btc).toLocaleString('en-US', { maximumFractionDigits: 0 })}`);
+    }
+    if (stock != null) {
+      const stockTicker = markets['NVDA'] ? 'NVDA' : markets['AAPL'] ? 'AAPL' : 'ETH';
+      mParts.push(`${stockTicker} at $${Number(stock).toLocaleString('en-US', { maximumFractionDigits: 2 })}`);
+    }
+    if (mParts.length > 0) {
+      lines.push(`Markets: ${mParts.join(', ')}.`);
+    }
+  }
+
+  // Closing line
+  if (isMorning) {
+    lines.push(`Shall I elaborate on anything, sir?`);
+  } else {
+    let nextEvent = 'nothing scheduled';
+    if (Array.isArray(calendar) && calendar.length > 0) {
+      nextEvent = calendar[0];
+    } else if (typeof calendar === 'string' && calendar.trim()) {
+      nextEvent = calendar.trim().split(/[;,\n]/)[0].trim();
+    }
+    lines.push(`Rest well, sir. Tomorrow's first event: ${nextEvent}.`);
+  }
+
+  // Assemble and trim to stay under 1500 characters
+  let briefingText = lines.join(' ');
+  if (briefingText.length > 1500) {
+    briefingText = briefingText.slice(0, 1497) + '...';
+  }
+
+  return {
+    briefingText,
+    components: {
+      weather,
+      calendar,
+      email,
+      news: newsItems,
+      markets,
+    },
+  };
+}
+
+/**
+ * Vercel handler — GET or POST
+ * Query/body params: type (morning|evening), location (city string)
+ */
+async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const { location = 'London' } = req.query;
+  const query  = req.query  || {};
+  const body   = req.body   || {};
+
+  const type     = query.type     || body.type     || 'morning';
+  const location = query.location || body.location || 'Los Angeles';
 
   try {
-    // Step 1: Geocode the location
-    let lat = 51.5074;
-    let lon = -0.1278;
-
-    const geoRes = await fetch(
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`,
-      { headers: { 'Accept': 'application/json' } }
-    );
-
-    if (geoRes.ok) {
-      const geoData = await geoRes.json();
-      if (geoData.results?.[0]) {
-        lat = geoData.results[0].latitude;
-        lon = geoData.results[0].longitude;
-      }
-    }
-
-    // Step 2: Fetch weather and news in parallel
-    const [weatherRes, newsRes] = await Promise.all([
-      fetch(
-        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m,apparent_temperature&wind_speed_unit=kmh`
-      ),
-      fetch(
-        `https://newsapi.org/v2/top-headlines?category=general&pageSize=4&country=us&apiKey=${process.env.NEWS_API_KEY}`
-      )
-    ]);
-
-    const weatherData = weatherRes.ok ? await weatherRes.json() : null;
-    const newsData = newsRes.ok ? await newsRes.json() : null;
-
-    // Weather code to condition label
-    const codes = {
-      0: 'Clear',
-      1: 'Mainly clear',
-      2: 'Partly cloudy',
-      3: 'Overcast',
-      45: 'Fog',
-      48: 'Freezing fog',
-      51: 'Light drizzle',
-      53: 'Moderate drizzle',
-      55: 'Dense drizzle',
-      61: 'Light rain',
-      63: 'Moderate rain',
-      65: 'Heavy rain',
-      71: 'Light snow',
-      73: 'Moderate snow',
-      75: 'Heavy snow',
-      80: 'Showers',
-      81: 'Moderate showers',
-      82: 'Violent showers',
-      95: 'Thunderstorm'
-    };
-
-    const w = weatherData?.current;
-    const now = new Date();
-
-    const weather = w
-      ? {
-          temperature: Math.round(w.temperature_2m),
-          feels_like: Math.round(w.apparent_temperature),
-          condition: codes[w.weather_code] || 'Unknown',
-          humidity: w.relative_humidity_2m,
-          wind_speed: Math.round(w.wind_speed_10m),
-          unit: 'C'
-        }
-      : null;
-
-    const headlines = (newsData?.articles || []).slice(0, 4).map(a => ({
-      title: a.title?.replace(/ - [^-]+$/, ''),
-      source: a.source?.name,
-      url: a.url,
-      publishedAt: a.publishedAt
-    }));
-
-    res.status(200).json({
-      date: now.toLocaleDateString('en-GB', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      }),
-      time: now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-      location,
-      weather,
-      headlines,
-      timestamp: now.toISOString()
-    });
-  } catch (e) {
-    console.error('Briefing API error:', e);
-    res.status(500).json({ error: e.message });
+    const result = await generateBriefing(type, location);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('[briefing] handler error:', err);
+    return res.status(500).json({ error: 'Failed to generate briefing', details: err.message });
   }
-};
+}
+
+module.exports = handler;
+module.exports.generateBriefing = generateBriefing;

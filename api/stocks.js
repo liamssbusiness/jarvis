@@ -2,19 +2,12 @@
 // Market data endpoint: crypto via CoinGecko (free), stocks via Yahoo Finance (unofficial)
 // No API key required for either source
 
-module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') return res.status(200).end();
-
-  const { symbols = 'BTC,ETH,AAPL,NVDA' } = req.query;
-  const symList = symbols
+async function fetchMarketData(symbols = 'BTC,ETH,AAPL,NVDA') {
+  const symList = (typeof symbols === 'string' ? symbols : symbols.join(','))
     .split(',')
     .map(s => s.trim().toUpperCase())
     .filter(Boolean)
-    .slice(0, 20); // cap at 20 symbols to avoid abuse
+    .slice(0, 20);
 
   const cryptoMap = {
     'BTC': 'bitcoin',
@@ -94,12 +87,32 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    res.status(200).json({
+    return {
       prices: results,
       timestamp: new Date().toISOString()
-    });
+    };
+  } catch (e) {
+    throw e;
+  }
+}
+
+const handler = async function(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  const { symbols = 'BTC,ETH,AAPL,NVDA' } = req.query;
+
+  try {
+    const result = await fetchMarketData(symbols);
+    res.status(200).json(result);
   } catch (e) {
     console.error('Stocks API error:', e);
     res.status(500).json({ error: e.message, prices: {} });
   }
 };
+
+module.exports = handler;
+module.exports.fetchMarketData = fetchMarketData;

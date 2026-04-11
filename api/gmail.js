@@ -348,3 +348,189 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ error: error.message });
   }
 };
+
+// Export getAccessToken for reuse by calendar.js
+async function getAccessToken() {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error('Google OAuth not configured — set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN');
+  }
+
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token'
+    })
+  });
+  const tokenData = await tokenRes.json();
+  if (!tokenData.access_token) throw new Error('Failed to get access token');
+  return tokenData.access_token;
+}
+module.exports.getAccessToken = getAccessToken;
+
+// Get unread email summary for morning brief
+async function getUnreadSummary(maxCount = 3) {
+  try {
+    const accessToken = await getAccessToken();
+    const listRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread%20in:inbox&maxResults=${maxCount + 10}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const listData = await listRes.json();
+    const messages = listData.messages || [];
+    const unreadCount = listData.resultSizeEstimate || messages.length;
+
+    const subjects = [];
+    for (const msg of messages.slice(0, maxCount)) {
+      const msgRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject`,
+        { headers: { 'Authorization': `Bearer ${accessToken}` } }
+      );
+      const msgData = await msgRes.json();
+      const subject = msgData.payload?.headers?.find(h => h.name === 'Subject')?.value;
+      if (subject) subjects.push(subject);
+    }
+
+    return { unreadCount, subjects };
+  } catch (_e) {
+    return { unreadCount: 0, subjects: [] };
+  }
+}
+module.exports.getUnreadSummary = getUnreadSummary;
+
+// Create email draft (does NOT send — sending requires approval in telegram.js)
+async function createDraft(to, subject, body) {
+  try {
+    const accessToken = await getAccessToken();
+
+    const rawEmail = [
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=UTF-8',
+      '',
+      body || ''
+    ].join('\r\n');
+
+    const encodedEmail = Buffer.from(rawEmail)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    const draftRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ message: { raw: encodedEmail } })
+    });
+    const draftData = await draftRes.json();
+    if (draftData.error) throw new Error(draftData.error.message);
+
+    return { draftId: draftData.id, success: true };
+  } catch (_e) {
+    return { success: false };
+  }
+}
+module.exports.createDraft = createDraft;
+
+// Export getAccessToken for reuse by calendar.js and other modules
+async function getAccessToken() {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error('Google OAuth credentials not configured (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN required)');
+  }
+
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token'
+    })
+  });
+  const tokenData = await tokenRes.json();
+  if (!tokenData.access_token) throw new Error('Failed to get access token');
+  return tokenData.access_token;
+}
+module.exports.getAccessToken = getAccessToken;
+
+// Get unread email summary for morning brief
+async function getUnreadSummary(maxCount = 3) {
+  try {
+    const accessToken = await getAccessToken();
+    const listRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread%20in:inbox&maxResults=${maxCount + 10}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const listData = await listRes.json();
+    const messages = listData.messages || [];
+
+    const subjects = [];
+    for (const msg of messages.slice(0, maxCount)) {
+      const msgRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject`,
+        { headers: { 'Authorization': `Bearer ${accessToken}` } }
+      );
+      const msgData = await msgRes.json();
+      const subject = msgData.payload?.headers?.find(h => h.name === 'Subject')?.value;
+      if (subject) subjects.push(subject);
+    }
+
+    return { unreadCount: listData.resultSizeEstimate || messages.length, subjects };
+  } catch (_e) {
+    return { unreadCount: 0, subjects: [] };
+  }
+}
+module.exports.getUnreadSummary = getUnreadSummary;
+
+// Create email draft (does NOT send — sending requires approval in telegram.js)
+async function createDraft(to, subject, body) {
+  try {
+    const accessToken = await getAccessToken();
+
+    const rawEmail = [
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=UTF-8',
+      '',
+      body || ''
+    ].join('\r\n');
+
+    const encodedEmail = Buffer.from(rawEmail)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    const draftRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ message: { raw: encodedEmail } })
+    });
+    const draftData = await draftRes.json();
+    if (draftData.error) throw new Error(draftData.error.message);
+    return { draftId: draftData.id, success: true };
+  } catch (_e) {
+    return { success: false };
+  }
+}
+module.exports.createDraft = createDraft;
