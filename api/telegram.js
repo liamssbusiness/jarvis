@@ -3,14 +3,14 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { buildSystemPrompt, ALFRED_TOOLS, APPROVAL_REQUIRED, selectModel } = require('./alfred.js');
-const { loadMemoryContext, saveSessionSummary, appendLearning, updateLocation, readMemoryFile, writeMemoryFile } = require('./memory.js');
-const { handleVoiceInput, handleVoiceOutput, sendTextMessage } = require('./voice.js');
+const { buildSystemPrompt, ALFRED_TOOLS, APPROVAL_REQUIRED, selectModel } = require('../lib/alfred.js');
+const { loadMemoryContext, saveSessionSummary, appendLearning, updateLocation, readMemoryFile, writeMemoryFile } = require('../lib/memory.js');
+const { handleVoiceInput, handleVoiceOutput, sendTextMessage } = require('../lib/voice.js');
 const { fetchWeather } = require('./weather.js');
 const { fetchNews } = require('./news.js');
 const { fetchMarketData } = require('./stocks.js');
 const { webSearch } = require('./search.js');
-const { listCalendarEvents, createCalendarEvent } = require('./calendar.js');
+const { listCalendarEvents, createCalendarEvent } = require('../lib/calendar.js');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

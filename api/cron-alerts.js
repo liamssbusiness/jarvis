@@ -2,8 +2,8 @@
 'use strict';
 
 const { generateBriefing } = require('./briefing.js');
-const { handleVoiceOutput, sendTextMessage } = require('./voice.js');
-const { extractLocationFromProfile } = require('./memory.js');
+const { handleVoiceOutput, sendTextMessage } = require('../lib/voice.js');
+const { extractLocationFromProfile } = require('../lib/memory.js');
 
 // Liam's Telegram user ID — pulled from env with hardcoded fallback
 const LIAM_CHAT_ID =

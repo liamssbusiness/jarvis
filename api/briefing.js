@@ -5,7 +5,7 @@ const { fetchWeather } = require('./weather.js');
 const { fetchNews } = require('./news.js');
 const { fetchMarketData } = require('./stocks.js');
 const { getUnreadSummary } = require('./gmail.js');
-const { getUpcomingEvents } = require('./calendar.js');
+const { getUpcomingEvents } = require('../lib/calendar.js');
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
