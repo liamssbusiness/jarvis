@@ -12,6 +12,18 @@ JARVIS is a single-owner personal dashboard deployed on Vercel. The frontend is 
 
 ---
 
+## Architecture at a glance
+
+```mermaid
+flowchart TD
+    U["Browser · chat / voice / widgets"] --> API["Vercel serverless /api"]
+    TG["Telegram · Alfred"] --> API
+    API --> CLA["Claude tool-use loop"]
+    CLA --> G["Gmail · Calendar"]
+    CLA --> NWS["News · Weather · Stocks"]
+    API -. "approval-gated" .-> LA["Local PC agent"]
+```
+
 ## Features
 
 - **AI chat panel** — full Claude conversation with tool-use loop (weather, news, stocks, web search, briefings); live token counter; searchable history; image attachment support
